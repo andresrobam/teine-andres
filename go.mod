@@ -1,0 +1,20 @@
+module teine-andres
+
+go 1.22
+
+require (
+	teine-andres/dbmodule v0.0.0
+	teine-andres/matrixmodule v0.0.0
+)
+
+replace teine-andres/dbmodule => ./dbmodule
+replace teine-andres/matrixmodule => ./matrixmodule
+
+require (
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20221227161230-091c0ba34f0a // indirect
+	github.com/jackc/puddle/v2 v2.2.1 // indirect
+	golang.org/x/crypto v0.17.0 // indirect
+	golang.org/x/sync v0.1.0 // indirect
+	golang.org/x/text v0.14.0 // indirect
+)
