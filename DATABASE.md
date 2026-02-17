@@ -6,19 +6,21 @@ This database stores the agent's core prompts, state, memories, tasks, credentia
 
 ### identity (read-only)
 - Purpose: Core system prompts and immutable guiding instructions provided by the owner.
-- Use: Read at startup and when reloading core guidance. Never write.
+- Use: This is already loaded into the agents initial prompt at startup, no need to query separatel, although you can. Never write.
 - Schema:
   - id uuid
-  - name text (unique)
+  - title text (unique)
   - prompt text
+  - load_order int
 
 ### self (read/write)
 - Purpose: Evolving internal prompts, heuristics, and self-reflections the agent can update over time.
-- Use: Insert new self notes, update existing ones, and remove obsolete entries.
+- Use: These are loaded into the agents inital prompt at startup. The agent can insert new self notes, update existing ones, and remove obsolete entries.
 - Schema:
   - id uuid
-  - title text
-  - content text
+  - title text (unique)
+  - prompt text
+  - load_order int
   - tags text[]
   - created_at timestamptz
   - updated_at timestamptz

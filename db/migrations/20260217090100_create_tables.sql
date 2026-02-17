@@ -1,14 +1,16 @@
 -- migrate:up
 CREATE TABLE identity (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    name text NOT NULL UNIQUE,
-    prompt text NOT NULL
+    title text NOT NULL UNIQUE,
+    prompt text NOT NULL,
+    load_order int NOT NULL
 );
 
 CREATE TABLE self (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    title text NOT NULL,
-    content text NOT NULL,
+    title text NOT NULL UNIQUE,
+    prompt text NOT NULL,
+    load_order int NOT NULL,
     tags text[] NOT NULL DEFAULT '{}',
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
