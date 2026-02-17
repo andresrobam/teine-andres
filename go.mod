@@ -5,6 +5,7 @@ go 1.22
 require (
 	teine-andres/dbmodule v0.0.0
 	teine-andres/matrixmodule v0.0.0
+	github.com/jackc/pgx/v5 v5.5.5
 )
 
 replace teine-andres/dbmodule => ./dbmodule

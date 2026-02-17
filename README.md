@@ -11,13 +11,19 @@ Minimal Go agent that calls OpenRouter and supports four tools:
 
 Set the following environment variables:
 
-- `OPENROUTER_API_KEY` (required)
-- `OPENROUTER_MODEL` (optional, default `openai/o3-mini`)
-- `OPENROUTER_BASE_URL` (optional, default `https://openrouter.ai/api/v1`)
 - `TOOL_LOOP_LIMIT` (optional, default `12`)
-- `DATABASE_URL` (required to use `db_read` and `db_modify`)
-- `MATRIX_BASE_URL` (required to use `matrix_read` and `matrix_write`)
-- `MATRIX_ACCESS_TOKEN` (required to use `matrix_read` and `matrix_write`)
+- `DATABASE_URL` (required to load startup data and use `db_read` and `db_modify`)
+
+OpenRouter credentials are loaded from `system_credentials` rows with these names:
+
+- `OPENROUTER_API_KEY` (required)
+- `OPENROUTER_MODEL` (required)
+- `OPENROUTER_BASE_URL` (required)
+
+Matrix credentials are loaded from `system_credentials` rows with these names:
+
+- `MATRIX_BASE_URL` (required for `matrix_read` and `matrix_write`)
+- `MATRIX_ACCESS_TOKEN` (required for `matrix_read` and `matrix_write`)
 
 ## Run
 

@@ -12,15 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"teine-andres/dbmodule"
 	"teine-andres/matrixmodule"
-)
-
-const hardcodedPrompt = "You are an AI agent, help me."
-
-const (
-	defaultModel   = "openai/o3-mini"
-	defaultBaseURL = "https://openrouter.ai/api/v1"
 )
 
 type message struct {
@@ -78,24 +72,6 @@ type dbArgs struct {
 }
 
 func main() {
-	apiKey := strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY"))
-	if apiKey == "" {
-		fmt.Fprintln(os.Stderr, "OPENROUTER_API_KEY is required")
-		os.Exit(1)
-	}
-
-	model := strings.TrimSpace(os.Getenv("OPENROUTER_MODEL"))
-	if model == "" {
-		model = defaultModel
-	}
-
-	baseURL := strings.TrimSpace(os.Getenv("OPENROUTER_BASE_URL"))
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	}
-
-	loopLimit := parseLoopLimit(os.Getenv("TOOL_LOOP_LIMIT"))
-
 	ctx := context.Background()
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 
@@ -104,14 +80,44 @@ func main() {
 		fmt.Fprintln(os.Stderr, "failed to create db pool:", err)
 		os.Exit(1)
 	}
+	if pool == nil {
+		fmt.Fprintln(os.Stderr, "DATABASE_URL is required to load startup data")
+		os.Exit(1)
+	}
 	if cleanup != nil {
 		defer cleanup()
+	}
+
+	apiKey, err := loadSystemCredential(ctx, pool, "OPENROUTER_API_KEY")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	model, err := loadSystemCredential(ctx, pool, "OPENROUTER_MODEL")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	baseURL, err := loadSystemCredential(ctx, pool, "OPENROUTER_BASE_URL")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	loopLimit := parseLoopLimit(os.Getenv("TOOL_LOOP_LIMIT"))
+
+	initialPrompt, err := loadInitialPrompt(ctx, pool)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 
 	messages := []message{
 		{
 			Role:    "user",
-			Content: hardcodedPrompt,
+			Content: initialPrompt,
 		},
 	}
 
@@ -162,6 +168,78 @@ func parseLoopLimit(value string) int {
 		return defaultLimit
 	}
 	return limit
+}
+
+func loadSystemCredential(ctx context.Context, pool *dbmodule.Pool, name string) (string, error) {
+	if pool == nil {
+		return "", errors.New("DATABASE_URL is not configured")
+	}
+
+	dbCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var secret string
+	err := pool.QueryRow(dbCtx, "SELECT secret FROM system_credentials WHERE name = $1", name).Scan(&secret)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("system_credentials %s is required", name)
+	}
+	if err != nil {
+		return "", err
+	}
+
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		return "", fmt.Errorf("system_credentials %s is required", name)
+	}
+
+	return secret, nil
+}
+
+func loadInitialPrompt(ctx context.Context, pool *dbmodule.Pool) (string, error) {
+	identityPrompts, err := readPrompts(ctx, pool, "SELECT prompt FROM identity ORDER BY load_order ASC")
+	if err != nil {
+		return "", err
+	}
+	selfPrompts, err := readPrompts(ctx, pool, "SELECT prompt FROM self ORDER BY load_order ASC")
+	if err != nil {
+		return "", err
+	}
+
+	prompts := append(identityPrompts, selfPrompts...)
+	if len(prompts) == 0 {
+		return "", errors.New("no startup prompts found")
+	}
+
+	return strings.Join(prompts, "\n\n"), nil
+}
+
+func readPrompts(ctx context.Context, pool *dbmodule.Pool, query string) ([]string, error) {
+	if pool == nil {
+		return nil, errors.New("DATABASE_URL is not configured")
+	}
+
+	dbCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	rows, err := pool.Query(dbCtx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var prompts []string
+	for rows.Next() {
+		var prompt string
+		if err := rows.Scan(&prompt); err != nil {
+			return nil, err
+		}
+		prompts = append(prompts, prompt)
+	}
+	if rows.Err() != nil {
+		return nil, rows.Err()
+	}
+
+	return prompts, nil
 }
 
 func buildTools() []tool {
@@ -295,9 +373,9 @@ func executeTool(ctx context.Context, client *http.Client, pool *dbmodule.Pool, 
 	case "db_modify":
 		return runModifyTool(ctx, pool, call.Function.Arguments)
 	case "matrix_write":
-		return runMatrixWriteTool(ctx, client, call.Function.Arguments)
+		return runMatrixWriteTool(ctx, client, pool, call.Function.Arguments)
 	case "matrix_read":
-		return runMatrixReadTool(ctx, client, call.Function.Arguments)
+		return runMatrixReadTool(ctx, client, pool, call.Function.Arguments)
 	default:
 		return toolError(fmt.Sprintf("unknown tool: %s", call.Function.Name))
 	}
@@ -338,14 +416,14 @@ func parseQueryArgs(rawArgs, toolName string) (string, error) {
 	return strings.TrimSpace(args.Query), nil
 }
 
-func runMatrixWriteTool(ctx context.Context, client *http.Client, rawArgs string) string {
-	baseURL := strings.TrimSpace(os.Getenv("MATRIX_BASE_URL"))
-	if baseURL == "" {
-		return toolError("MATRIX_BASE_URL is not configured")
+func runMatrixWriteTool(ctx context.Context, client *http.Client, pool *dbmodule.Pool, rawArgs string) string {
+	baseURL, err := loadSystemCredential(ctx, pool, "MATRIX_BASE_URL")
+	if err != nil {
+		return toolError(err.Error())
 	}
-	token := strings.TrimSpace(os.Getenv("MATRIX_ACCESS_TOKEN"))
-	if token == "" {
-		return toolError("MATRIX_ACCESS_TOKEN is not configured")
+	token, err := loadSystemCredential(ctx, pool, "MATRIX_ACCESS_TOKEN")
+	if err != nil {
+		return toolError(err.Error())
 	}
 
 	result, err := matrixmodule.Write(ctx, client, baseURL, token, rawArgs)
@@ -355,14 +433,14 @@ func runMatrixWriteTool(ctx context.Context, client *http.Client, rawArgs string
 	return result
 }
 
-func runMatrixReadTool(ctx context.Context, client *http.Client, rawArgs string) string {
-	baseURL := strings.TrimSpace(os.Getenv("MATRIX_BASE_URL"))
-	if baseURL == "" {
-		return toolError("MATRIX_BASE_URL is not configured")
+func runMatrixReadTool(ctx context.Context, client *http.Client, pool *dbmodule.Pool, rawArgs string) string {
+	baseURL, err := loadSystemCredential(ctx, pool, "MATRIX_BASE_URL")
+	if err != nil {
+		return toolError(err.Error())
 	}
-	token := strings.TrimSpace(os.Getenv("MATRIX_ACCESS_TOKEN"))
-	if token == "" {
-		return toolError("MATRIX_ACCESS_TOKEN is not configured")
+	token, err := loadSystemCredential(ctx, pool, "MATRIX_ACCESS_TOKEN")
+	if err != nil {
+		return toolError(err.Error())
 	}
 
 	result, err := matrixmodule.Read(ctx, client, baseURL, token, rawArgs)
