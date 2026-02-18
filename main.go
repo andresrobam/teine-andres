@@ -135,9 +135,9 @@ func main() {
 
 	tools := buildTools()
 	for {
-		initialPrompt, err := loadInitialPrompt(ctx, promptRepo)
-		initialPrompt = append(initialPrompt, ownUserID)
 		time.Sleep(5 * time.Second)
+		initialPrompt, err := loadInitialPrompt(ctx, promptRepo)
+		initialPrompt = append(initialPrompt, "Your own Matrix username is: "+ownUserID)
 		nextBatch, err := syncRepo.GetNextBatch(ctx)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "failed to get sync token:", err)
@@ -166,7 +166,7 @@ func main() {
 		var contents []string
 		if syncResp.Rooms.Join != nil {
 			for roomID, joinedRoom := range syncResp.Rooms.Join {
-				events := []string{fmt.Sprintf("Here are the events that happened in the Matrix room \"%s\" since the last sync:", roomID)}
+				events := []string{}
 				for _, event := range joinedRoom.Timeline.Events {
 					var eventMap map[string]any
 					json.Unmarshal(event, &eventMap)
@@ -174,8 +174,8 @@ func main() {
 						events = append(events, string(event))
 					}
 				}
-				if len(events) > 1 {
-					contents = append(contents, "["+strings.Join(events, ",")+"]")
+				if len(events) > 0 {
+					contents = append(contents, fmt.Sprintf("Here are the events that happened in the Matrix room \"%s\" since the last sync:\n[%s]", roomID, strings.Join(events, ",")))
 				}
 			}
 		}
@@ -216,7 +216,7 @@ func main() {
 
 			if len(respMsg.ToolCalls) == 0 {
 				fmt.Println(respMsg.Content)
-				return
+				break
 			}
 
 			for _, call := range respMsg.ToolCalls {
