@@ -1,0 +1,18 @@
+-- migrate:up
+CREATE TABLE matrix_sync_state (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    next_batch text,
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Grant SELECT and UPDATE permissions (no DELETE) to agent
+REVOKE ALL ON TABLE matrix_sync_state FROM agent;
+GRANT SELECT, UPDATE ON TABLE matrix_sync_state TO agent;
+
+-- Seed with initial row
+INSERT INTO matrix_sync_state (next_batch)
+VALUES (NULL);
+
+-- migrate:down
+REVOKE ALL ON TABLE matrix_sync_state FROM agent;
+DROP TABLE IF EXISTS matrix_sync_state;

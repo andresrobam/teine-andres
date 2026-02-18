@@ -25,7 +25,7 @@ func (r *PromptRepository) GetIdentityPrompts(ctx context.Context) ([]models.Pro
 	dbCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	rows, err := r.pool.Query(dbCtx, "SELECT id, title, prompt, load_order, NULL as tags, created_at, NULL as updated_at FROM identity ORDER BY load_order ASC")
+	rows, err := r.pool.Query(dbCtx, "SELECT title, prompt, load_order FROM identity ORDER BY load_order ASC")
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +34,7 @@ func (r *PromptRepository) GetIdentityPrompts(ctx context.Context) ([]models.Pro
 	var prompts []models.Prompt
 	for rows.Next() {
 		var p models.Prompt
-		if err := rows.Scan(&p.ID, &p.Title, &p.Prompt, &p.LoadOrder, &p.Tags, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.Title, &p.Prompt, &p.LoadOrder); err != nil {
 			return nil, err
 		}
 		prompts = append(prompts, p)
@@ -54,7 +54,7 @@ func (r *PromptRepository) GetSelfPrompts(ctx context.Context) ([]models.Prompt,
 	dbCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	rows, err := r.pool.Query(dbCtx, "SELECT id, title, prompt, load_order, tags, created_at, updated_at FROM self ORDER BY load_order ASC")
+	rows, err := r.pool.Query(dbCtx, "SELECT title, prompt, load_order FROM self ORDER BY load_order ASC")
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +63,7 @@ func (r *PromptRepository) GetSelfPrompts(ctx context.Context) ([]models.Prompt,
 	var prompts []models.Prompt
 	for rows.Next() {
 		var p models.Prompt
-		if err := rows.Scan(&p.ID, &p.Title, &p.Prompt, &p.LoadOrder, &p.Tags, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.Title, &p.Prompt, &p.LoadOrder); err != nil {
 			return nil, err
 		}
 		prompts = append(prompts, p)

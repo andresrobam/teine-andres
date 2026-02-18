@@ -18,7 +18,6 @@ OpenRouter credentials are loaded from `system_credentials` rows with these name
 
 - `OPENROUTER_API_KEY` (required)
 - `OPENROUTER_MODEL` (required)
-- `OPENROUTER_BASE_URL` (required)
 
 Matrix credentials are loaded from `system_credentials` rows with these names:
 

@@ -2,10 +2,9 @@
 INSERT INTO system_credentials (name, secret)
 VALUES
     ('OPENROUTER_API_KEY', ''),
-    ('OPENROUTER_MODEL', ''),
-    ('OPENROUTER_BASE_URL', '')
+    ('OPENROUTER_MODEL', '')
 ON CONFLICT (name) DO NOTHING;
 
 -- migrate:down
 DELETE FROM system_credentials
-WHERE name IN ('OPENROUTER_API_KEY', 'OPENROUTER_MODEL', 'OPENROUTER_BASE_URL');
+WHERE name IN ('OPENROUTER_API_KEY', 'OPENROUTER_MODEL');

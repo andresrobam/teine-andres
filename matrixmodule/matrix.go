@@ -42,11 +42,31 @@ type readArgs struct {
 	Direction string `json:"direction"`
 }
 
+// SyncResponse represents the response from the Matrix sync endpoint
+type SyncResponse struct {
+	NextBatch string `json:"next_batch"`
+	Rooms     struct {
+		Join   map[string]JoinedRoom `json:"join"`
+		Invite map[string]any        `json:"invite"` // We only need the keys (Room IDs)
+	} `json:"rooms"`
+}
+
+type JoinedRoom struct {
+	Timeline struct {
+		Events []json.RawMessage `json:"events"`
+	} `json:"timeline"`
+}
+
+// WhoamiResponse represents the response from the Matrix whoami endpoint
+type WhoamiResponse struct {
+	UserID string `json:"user_id"`
+}
+
 // ToolSpec represents a tool specification for the AI model
 type ToolSpec struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	Parameters  map[string]interface{} `json:"parameters"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
 }
 
 // Tool represents a tool definition with type and spec
@@ -63,14 +83,14 @@ func GetToolSpecs() []Tool {
 			Function: ToolSpec{
 				Name:        "matrix_write",
 				Description: "Send a message to a Matrix room",
-				Parameters: map[string]interface{}{
+				Parameters: map[string]any{
 					"type": "object",
-					"properties": map[string]interface{}{
-						"room_id": map[string]interface{}{
+					"properties": map[string]any{
+						"room_id": map[string]any{
 							"type":        "string",
 							"description": "Matrix room ID",
 						},
-						"message": map[string]interface{}{
+						"message": map[string]any{
 							"type":        "string",
 							"description": "Message text to send",
 						},
@@ -84,22 +104,22 @@ func GetToolSpecs() []Tool {
 			Function: ToolSpec{
 				Name:        "matrix_read",
 				Description: "Read messages from a Matrix room",
-				Parameters: map[string]interface{}{
+				Parameters: map[string]any{
 					"type": "object",
-					"properties": map[string]interface{}{
-						"room_id": map[string]interface{}{
+					"properties": map[string]any{
+						"room_id": map[string]any{
 							"type":        "string",
 							"description": "Matrix room ID",
 						},
-						"limit": map[string]interface{}{
+						"limit": map[string]any{
 							"type":        "integer",
 							"description": "Maximum number of events to return",
 						},
-						"from": map[string]interface{}{
+						"from": map[string]any{
 							"type":        "string",
 							"description": "Pagination token to start from",
 						},
-						"direction": map[string]interface{}{
+						"direction": map[string]any{
 							"type":        "string",
 							"description": "Direction: b (backwards) or f (forwards)",
 						},
@@ -141,12 +161,12 @@ func (c *Client) write(ctx context.Context, rawArgs string) (string, error) {
 		return "", err
 	}
 
-	var result map[string]interface{}
-	if err := c.doPost(ctx, endpoint, body, &result); err != nil {
+	var result map[string]any
+	if err := c.doPut(ctx, endpoint, body, &result); err != nil {
 		return "", err
 	}
 
-	payload, err := json.Marshal(map[string]interface{}{
+	payload, err := json.Marshal(map[string]any{
 		"event_id": result["event_id"],
 	})
 	if err != nil {
@@ -177,7 +197,7 @@ func (c *Client) read(ctx context.Context, rawArgs string) (string, error) {
 
 	endpoint := c.buildURL("/_matrix/client/v3/rooms/"+url.PathEscape(args.RoomID)+"/messages", query)
 
-	var result map[string]interface{}
+	var result map[string]any
 	if err := c.doGet(ctx, endpoint, &result); err != nil {
 		return "", err
 	}
@@ -226,7 +246,7 @@ func (c *Client) buildURL(path string, query url.Values) string {
 }
 
 // doPost performs an authenticated POST request and decodes the response
-func (c *Client) doPost(ctx context.Context, endpoint string, body []byte, result interface{}) error {
+func (c *Client) doPost(ctx context.Context, endpoint string, body []byte, result any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -236,8 +256,19 @@ func (c *Client) doPost(ctx context.Context, endpoint string, body []byte, resul
 	return c.doRequest(req, result)
 }
 
+// doPut performs an authenticated PUT request and decodes the response
+func (c *Client) doPut(ctx context.Context, endpoint string, body []byte, result any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+	return c.doRequest(req, result)
+}
+
 // doGet performs an authenticated GET request and decodes the response
-func (c *Client) doGet(ctx context.Context, endpoint string, result interface{}) error {
+func (c *Client) doGet(ctx context.Context, endpoint string, result any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return err
@@ -248,14 +279,14 @@ func (c *Client) doGet(ctx context.Context, endpoint string, result interface{})
 }
 
 // doRequest executes an HTTP request and handles common response patterns
-func (c *Client) doRequest(req *http.Request, result interface{}) error {
+func (c *Client) doRequest(req *http.Request, result any) error {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
-	var data map[string]interface{}
+	var data map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		return err
 	}
@@ -275,5 +306,49 @@ func (c *Client) doRequest(req *http.Request, result interface{}) error {
 		}
 	}
 
+	return nil
+}
+
+// Sync performs a sync request to get unread messages since the last sync token
+func (c *Client) Sync(ctx context.Context, since string) (*SyncResponse, error) {
+	query := url.Values{}
+	query.Set("timeout", "1")
+	if since != "" {
+		query.Set("since", since)
+	}
+
+	endpoint := c.buildURL("/_matrix/client/v3/sync", query)
+
+	var result SyncResponse
+	if err := c.doGet(ctx, endpoint, &result); err != nil {
+		return nil, err
+	}
+
+	fmt.Println(result.NextBatch)
+	for roomId := range result.Rooms.Invite {
+		fmt.Println(roomId)
+	}
+
+	return &result, nil
+}
+
+func (c *Client) Whoami(ctx context.Context) (*WhoamiResponse, error) {
+	endpoint := c.buildURL("/_matrix/client/v3/account/whoami", nil)
+
+	var result WhoamiResponse
+	if err := c.doGet(ctx, endpoint, &result); err != nil {
+		return nil, err
+	}
+
+	return &result, nil
+}
+
+// JoinRoom joins a Matrix room by ID
+func (c *Client) JoinRoom(ctx context.Context, roomID string) error {
+	endpoint := c.buildURL("/_matrix/client/v3/rooms/"+url.PathEscape(roomID)+"/join", nil)
+	var result map[string]any
+	if err := c.doPost(ctx, endpoint, []byte("{}"), &result); err != nil {
+		return err
+	}
 	return nil
 }

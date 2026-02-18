@@ -7,13 +7,9 @@ import (
 )
 
 type Prompt struct {
-	ID        uuid.UUID  `db:"id"`
-	Title     string     `db:"title"`
-	Prompt    string     `db:"prompt"`
-	LoadOrder int        `db:"load_order"`
-	Tags      []string   `db:"tags"`
-	CreatedAt time.Time  `db:"created_at"`
-	UpdatedAt *time.Time `db:"updated_at"`
+	Title     string `db:"title"`
+	Prompt    string `db:"prompt"`
+	LoadOrder int    `db:"load_order"`
 }
 
 type Task struct {

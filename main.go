@@ -41,9 +41,9 @@ type tool struct {
 }
 
 type toolSpec struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	Parameters  map[string]interface{} `json:"parameters"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
 }
 
 type reasoning struct {
@@ -51,11 +51,11 @@ type reasoning struct {
 }
 
 type chatRequest struct {
-	Model      string      `json:"model"`
-	Messages   []message   `json:"messages"`
-	Tools      []tool      `json:"tools,omitempty"`
-	ToolChoice interface{} `json:"tool_choice,omitempty"`
-	Reasoning  *reasoning  `json:"reasoning,omitempty"`
+	Model      string     `json:"model"`
+	Messages   []message  `json:"messages"`
+	Tools      []tool     `json:"tools,omitempty"`
+	ToolChoice any        `json:"tool_choice,omitempty"`
+	Reasoning  *reasoning `json:"reasoning,omitempty"`
 }
 
 type chatResponse struct {
@@ -90,6 +90,7 @@ func main() {
 
 	credRepo := repositories.NewCredentialRepository(pool)
 	promptRepo := repositories.NewPromptRepository(pool)
+	syncRepo := repositories.NewSyncStateRepository(pool)
 
 	apiKey, err := credRepo.GetSystemCredential(ctx, "OPENROUTER_API_KEY")
 	if err != nil {
@@ -103,15 +104,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	baseURL, err := credRepo.GetSystemCredential(ctx, "OPENROUTER_BASE_URL")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
 	loopLimit := parseLoopLimit(os.Getenv("TOOL_LOOP_LIMIT"))
 
-	initialPrompt, err := loadInitialPrompt(ctx, promptRepo)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -130,42 +124,111 @@ func main() {
 	}
 	matrixClient := matrixmodule.NewClient(httpClient, matrixBaseURL, matrixToken)
 
-	messages := []message{
-		{
-			Role:    "user",
-			Content: initialPrompt,
-		},
+	// Get the agent's own Matrix user ID
+	whoamiResp, err := matrixClient.Whoami(ctx)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "failed to get Matrix user ID:", err)
+		os.Exit(1)
 	}
+	ownUserID := whoamiResp.UserID
+	fmt.Printf("Matrix user ID is %s\n", ownUserID)
 
 	tools := buildTools()
-
-	for i := 0; i < loopLimit; i++ {
-		respMsg, err := callChat(ctx, httpClient, apiKey, baseURL, chatRequest{
-			Model:      model,
-			Messages:   messages,
-			Tools:      tools,
-			ToolChoice: "auto",
-			Reasoning:  &reasoning{Effort: "medium"},
-		})
+	for {
+		initialPrompt, err := loadInitialPrompt(ctx, promptRepo)
+		initialPrompt = append(initialPrompt, ownUserID)
+		time.Sleep(5 * time.Second)
+		nextBatch, err := syncRepo.GetNextBatch(ctx)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "chat error:", err)
-			os.Exit(1)
+			fmt.Fprintln(os.Stderr, "failed to get sync token:", err)
 		}
 
-		messages = append(messages, respMsg)
-
-		if len(respMsg.ToolCalls) == 0 {
-			fmt.Println(respMsg.Content)
-			return
+		syncResp, err := matrixClient.Sync(ctx, nextBatch)
+		if err != nil {
+			continue
 		}
 
-		for _, call := range respMsg.ToolCalls {
-			result := executeTool(ctx, httpClient, pool, credRepo, matrixClient, call)
-			messages = append(messages, message{
-				Role:       "tool",
-				ToolCallID: call.ID,
-				Content:    result,
+		// Join all invited rooms
+		if syncResp.Rooms.Invite != nil {
+			for roomID := range syncResp.Rooms.Invite {
+				if err := matrixClient.JoinRoom(ctx, roomID); err != nil {
+					fmt.Fprintf(os.Stderr, "failed to join room %s: %v\n", roomID, err)
+					continue
+				}
+				fmt.Printf("Joined room %s\n", roomID)
+			}
+		}
+
+		if err := syncRepo.UpdateNextBatch(ctx, syncResp.NextBatch); err != nil {
+			fmt.Fprintln(os.Stderr, "failed to update sync token:", err)
+		}
+		// Collect messages from joined rooms
+		var contents []string
+		if syncResp.Rooms.Join != nil {
+			for roomID, joinedRoom := range syncResp.Rooms.Join {
+				events := []string{fmt.Sprintf("Here are the events that happened in the Matrix room \"%s\" since the last sync:", roomID)}
+				for _, event := range joinedRoom.Timeline.Events {
+					var eventMap map[string]any
+					json.Unmarshal(event, &eventMap)
+					if eventMap["sender"] != ownUserID {
+						events = append(events, string(event))
+					}
+				}
+				if len(events) > 1 {
+					contents = append(contents, "["+strings.Join(events, ",")+"]")
+				}
+			}
+		}
+
+		if len(contents) == 0 {
+			fmt.Println("No messages, waiting...")
+			continue
+		}
+
+		initialPrompt = append(initialPrompt, strings.Join(contents, "\n\n"))
+		messages := []message{{
+			Role:    "system",
+			Content: strings.Join(initialPrompt, "\n\n"),
+		}}
+		messages = append(messages, message{
+			Role:    "user",
+			Content: "Help your owner achieve what he wants",
+		})
+
+		fmt.Println("%v", messages)
+
+		for range loopLimit {
+
+			respMsg, err := callChat(ctx, httpClient, apiKey, chatRequest{
+				Model:      model,
+				Messages:   messages,
+				Tools:      tools,
+				ToolChoice: "auto",
+				Reasoning:  &reasoning{Effort: "medium"},
 			})
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "chat error:", err)
+				os.Exit(1)
+			}
+
+			fmt.Println("%v", respMsg)
+			messages = append(messages, respMsg)
+
+			if len(respMsg.ToolCalls) == 0 {
+				fmt.Println(respMsg.Content)
+				return
+			}
+
+			for _, call := range respMsg.ToolCalls {
+				fmt.Println("TOOL CALL: %v", call)
+				result := executeTool(ctx, httpClient, pool, credRepo, matrixClient, call)
+				fmt.Println("TOOL RESULT: %v", result)
+				messages = append(messages, message{
+					Role:       "tool",
+					ToolCallID: call.ID,
+					Content:    result,
+				})
+			}
 		}
 	}
 
@@ -186,14 +249,14 @@ func parseLoopLimit(value string) int {
 	return limit
 }
 
-func loadInitialPrompt(ctx context.Context, promptRepo *repositories.PromptRepository) (string, error) {
+func loadInitialPrompt(ctx context.Context, promptRepo *repositories.PromptRepository) ([]string, error) {
 	identityPrompts, err := promptRepo.GetIdentityPrompts(ctx)
 	if err != nil {
-		return "", err
+		return []string{}, err
 	}
 	selfPrompts, err := promptRepo.GetSelfPrompts(ctx)
 	if err != nil {
-		return "", err
+		return []string{}, err
 	}
 
 	var allPrompts []string
@@ -204,11 +267,7 @@ func loadInitialPrompt(ctx context.Context, promptRepo *repositories.PromptRepos
 		allPrompts = append(allPrompts, p.Prompt)
 	}
 
-	if len(allPrompts) == 0 {
-		return "", errors.New("no startup prompts found")
-	}
-
-	return strings.Join(allPrompts, "\n\n"), nil
+	return allPrompts, nil
 }
 
 func buildTools() []tool {
@@ -218,10 +277,10 @@ func buildTools() []tool {
 			Function: toolSpec{
 				Name:        "db_read",
 				Description: "Run a read-only SQL query against the PostgreSQL database",
-				Parameters: map[string]interface{}{
+				Parameters: map[string]any{
 					"type": "object",
-					"properties": map[string]interface{}{
-						"query": map[string]interface{}{
+					"properties": map[string]any{
+						"query": map[string]any{
 							"type":        "string",
 							"description": "SQL query string",
 						},
@@ -235,10 +294,10 @@ func buildTools() []tool {
 			Function: toolSpec{
 				Name:        "db_modify",
 				Description: "Run a write SQL query against the PostgreSQL database",
-				Parameters: map[string]interface{}{
+				Parameters: map[string]any{
 					"type": "object",
-					"properties": map[string]interface{}{
-						"query": map[string]interface{}{
+					"properties": map[string]any{
+						"query": map[string]any{
 							"type":        "string",
 							"description": "SQL query string",
 						},
@@ -262,13 +321,13 @@ func buildTools() []tool {
 	return append(dbTools, matrixTools...)
 }
 
-func callChat(ctx context.Context, client *http.Client, apiKey, baseURL string, payload chatRequest) (message, error) {
+func callChat(ctx context.Context, client *http.Client, apiKey string, payload chatRequest) (message, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return message{}, err
 	}
 
-	endpoint := strings.TrimRight(baseURL, "/") + "/chat/completions"
+	endpoint := "https://openrouter.ai/api/v1/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return message{}, err
