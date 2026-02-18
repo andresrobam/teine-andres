@@ -117,6 +117,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Initialize Matrix client with credentials
+	matrixBaseURL, err := credRepo.GetSystemCredential(ctx, "MATRIX_BASE_URL")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	matrixToken, err := credRepo.GetSystemCredential(ctx, "MATRIX_ACCESS_TOKEN")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	matrixClient := matrixmodule.NewClient(httpClient, matrixBaseURL, matrixToken)
+
 	messages := []message{
 		{
 			Role:    "user",
@@ -147,7 +160,7 @@ func main() {
 		}
 
 		for _, call := range respMsg.ToolCalls {
-			result := executeTool(ctx, httpClient, pool, credRepo, call)
+			result := executeTool(ctx, httpClient, pool, credRepo, matrixClient, call)
 			messages = append(messages, message{
 				Role:       "tool",
 				ToolCallID: call.ID,
@@ -199,7 +212,7 @@ func loadInitialPrompt(ctx context.Context, promptRepo *repositories.PromptRepos
 }
 
 func buildTools() []tool {
-	return []tool{
+	dbTools := []tool{
 		{
 			Type: "function",
 			Function: toolSpec{
@@ -234,57 +247,19 @@ func buildTools() []tool {
 				},
 			},
 		},
-		{
-			Type: "function",
-			Function: toolSpec{
-				Name:        "matrix_write",
-				Description: "Send a message to a Matrix room",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"room_id": map[string]interface{}{
-							"type":        "string",
-							"description": "Matrix room ID",
-						},
-						"message": map[string]interface{}{
-							"type":        "string",
-							"description": "Message text to send",
-						},
-					},
-					"required": []string{"room_id", "message"},
-				},
-			},
-		},
-		{
-			Type: "function",
-			Function: toolSpec{
-				Name:        "matrix_read",
-				Description: "Read messages from a Matrix room",
-				Parameters: map[string]interface{}{
-					"type": "object",
-					"properties": map[string]interface{}{
-						"room_id": map[string]interface{}{
-							"type":        "string",
-							"description": "Matrix room ID",
-						},
-						"limit": map[string]interface{}{
-							"type":        "integer",
-							"description": "Maximum number of events to return",
-						},
-						"from": map[string]interface{}{
-							"type":        "string",
-							"description": "Pagination token to start from",
-						},
-						"direction": map[string]interface{}{
-							"type":        "string",
-							"description": "Direction: b (backwards) or f (forwards)",
-						},
-					},
-					"required": []string{"room_id"},
-				},
-			},
-		},
 	}
+
+	// Convert Matrix tools to match main's tool type
+	matrixToolSpecs := matrixmodule.GetToolSpecs()
+	matrixTools := make([]tool, len(matrixToolSpecs))
+	for i, mt := range matrixToolSpecs {
+		matrixTools[i] = tool{
+			Type:     mt.Type,
+			Function: toolSpec(mt.Function),
+		}
+	}
+
+	return append(dbTools, matrixTools...)
 }
 
 func callChat(ctx context.Context, client *http.Client, apiKey, baseURL string, payload chatRequest) (message, error) {
@@ -322,16 +297,18 @@ func callChat(ctx context.Context, client *http.Client, apiKey, baseURL string, 
 	return out.Choices[0].Message, nil
 }
 
-func executeTool(ctx context.Context, client *http.Client, pool *dbmodule.Pool, credRepo *repositories.CredentialRepository, call toolCall) string {
+func executeTool(ctx context.Context, client *http.Client, pool *dbmodule.Pool, credRepo *repositories.CredentialRepository, matrixClient *matrixmodule.Client, call toolCall) string {
 	switch call.Function.Name {
 	case "db_read":
 		return runReadTool(ctx, pool, call.Function.Arguments)
 	case "db_modify":
 		return runModifyTool(ctx, pool, call.Function.Arguments)
-	case "matrix_write":
-		return runMatrixWriteTool(ctx, client, credRepo, call.Function.Arguments)
-	case "matrix_read":
-		return runMatrixReadTool(ctx, client, credRepo, call.Function.Arguments)
+	case "matrix_write", "matrix_read":
+		result, err := matrixClient.ExecuteTool(ctx, call.Function.Name, call.Function.Arguments)
+		if err != nil {
+			return toolError(err.Error())
+		}
+		return result
 	default:
 		return toolError(fmt.Sprintf("unknown tool: %s", call.Function.Name))
 	}
@@ -370,40 +347,6 @@ func parseQueryArgs(rawArgs, toolName string) (string, error) {
 		return "", errors.New("query is required")
 	}
 	return strings.TrimSpace(args.Query), nil
-}
-
-func runMatrixWriteTool(ctx context.Context, client *http.Client, credRepo *repositories.CredentialRepository, rawArgs string) string {
-	baseURL, err := credRepo.GetSystemCredential(ctx, "MATRIX_BASE_URL")
-	if err != nil {
-		return toolError(err.Error())
-	}
-	token, err := credRepo.GetSystemCredential(ctx, "MATRIX_ACCESS_TOKEN")
-	if err != nil {
-		return toolError(err.Error())
-	}
-
-	result, err := matrixmodule.Write(ctx, client, baseURL, token, rawArgs)
-	if err != nil {
-		return toolError(err.Error())
-	}
-	return result
-}
-
-func runMatrixReadTool(ctx context.Context, client *http.Client, credRepo *repositories.CredentialRepository, rawArgs string) string {
-	baseURL, err := credRepo.GetSystemCredential(ctx, "MATRIX_BASE_URL")
-	if err != nil {
-		return toolError(err.Error())
-	}
-	token, err := credRepo.GetSystemCredential(ctx, "MATRIX_ACCESS_TOKEN")
-	if err != nil {
-		return toolError(err.Error())
-	}
-
-	result, err := matrixmodule.Read(ctx, client, baseURL, token, rawArgs)
-	if err != nil {
-		return toolError(err.Error())
-	}
-	return result
 }
 
 func toolError(msg string) string {

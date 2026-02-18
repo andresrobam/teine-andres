@@ -12,11 +12,29 @@ import (
 	"time"
 )
 
+// Client provides Matrix API functionality with cached credentials
+type Client struct {
+	httpClient *http.Client
+	baseURL    string
+	token      string
+}
+
+// NewClient creates a new Matrix client with the provided credentials
+func NewClient(httpClient *http.Client, baseURL, token string) *Client {
+	return &Client{
+		httpClient: httpClient,
+		baseURL:    baseURL,
+		token:      token,
+	}
+}
+
+// writeArgs represents the arguments for the matrix_write tool
 type writeArgs struct {
 	RoomID  string `json:"room_id"`
 	Message string `json:"message"`
 }
 
+// readArgs represents the arguments for the matrix_read tool
 type readArgs struct {
 	RoomID    string `json:"room_id"`
 	Limit     int    `json:"limit"`
@@ -24,20 +42,96 @@ type readArgs struct {
 	Direction string `json:"direction"`
 }
 
-func Write(ctx context.Context, client *http.Client, baseURL, token, rawArgs string) (string, error) {
-	var args writeArgs
-	if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
-		return "", fmt.Errorf("invalid matrix_write args: %w", err)
+// ToolSpec represents a tool specification for the AI model
+type ToolSpec struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	Parameters  map[string]interface{} `json:"parameters"`
+}
+
+// Tool represents a tool definition with type and spec
+type Tool struct {
+	Type     string   `json:"type"`
+	Function ToolSpec `json:"function"`
+}
+
+// GetToolSpecs returns the tool specifications for Matrix operations
+func GetToolSpecs() []Tool {
+	return []Tool{
+		{
+			Type: "function",
+			Function: ToolSpec{
+				Name:        "matrix_write",
+				Description: "Send a message to a Matrix room",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"room_id": map[string]interface{}{
+							"type":        "string",
+							"description": "Matrix room ID",
+						},
+						"message": map[string]interface{}{
+							"type":        "string",
+							"description": "Message text to send",
+						},
+					},
+					"required": []string{"room_id", "message"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: ToolSpec{
+				Name:        "matrix_read",
+				Description: "Read messages from a Matrix room",
+				Parameters: map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"room_id": map[string]interface{}{
+							"type":        "string",
+							"description": "Matrix room ID",
+						},
+						"limit": map[string]interface{}{
+							"type":        "integer",
+							"description": "Maximum number of events to return",
+						},
+						"from": map[string]interface{}{
+							"type":        "string",
+							"description": "Pagination token to start from",
+						},
+						"direction": map[string]interface{}{
+							"type":        "string",
+							"description": "Direction: b (backwards) or f (forwards)",
+						},
+					},
+					"required": []string{"room_id"},
+				},
+			},
+		},
 	}
-	if strings.TrimSpace(args.RoomID) == "" {
-		return "", errors.New("room_id is required")
+}
+
+// ExecuteTool executes a Matrix tool by name with the given arguments
+func (c *Client) ExecuteTool(ctx context.Context, toolName, rawArgs string) (string, error) {
+	switch toolName {
+	case "matrix_write":
+		return c.write(ctx, rawArgs)
+	case "matrix_read":
+		return c.read(ctx, rawArgs)
+	default:
+		return "", fmt.Errorf("unknown matrix tool: %s", toolName)
 	}
-	if strings.TrimSpace(args.Message) == "" {
-		return "", errors.New("message is required")
+}
+
+// write sends a message to a Matrix room
+func (c *Client) write(ctx context.Context, rawArgs string) (string, error) {
+	args, err := parseWriteArgs(rawArgs)
+	if err != nil {
+		return "", err
 	}
 
 	txnID := fmt.Sprintf("%d", time.Now().UnixNano())
-	endpoint := strings.TrimRight(baseURL, "/") + "/_matrix/client/v3/rooms/" + url.PathEscape(args.RoomID) + "/send/m.room.message/" + txnID
+	endpoint := c.buildURL("/_matrix/client/v3/rooms/"+url.PathEscape(args.RoomID)+"/send/m.room.message/"+txnID, nil)
 
 	body, err := json.Marshal(map[string]string{
 		"msgtype": "m.text",
@@ -47,29 +141,13 @@ func Write(ctx context.Context, client *http.Client, baseURL, token, rawArgs str
 		return "", err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
+	var result map[string]interface{}
+	if err := c.doPost(ctx, endpoint, body, &result); err != nil {
 		return "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	var out map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", err
-	}
-	if errText, ok := out["error"].(string); ok {
-		return "", errors.New(errText)
 	}
 
 	payload, err := json.Marshal(map[string]interface{}{
-		"event_id": out["event_id"],
+		"event_id": result["event_id"],
 	})
 	if err != nil {
 		return "", err
@@ -77,13 +155,11 @@ func Write(ctx context.Context, client *http.Client, baseURL, token, rawArgs str
 	return string(payload), nil
 }
 
-func Read(ctx context.Context, client *http.Client, baseURL, token, rawArgs string) (string, error) {
-	var args readArgs
-	if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
-		return "", fmt.Errorf("invalid matrix_read args: %w", err)
-	}
-	if strings.TrimSpace(args.RoomID) == "" {
-		return "", errors.New("room_id is required")
+// read reads messages from a Matrix room
+func (c *Client) read(ctx context.Context, rawArgs string) (string, error) {
+	args, err := parseReadArgs(rawArgs)
+	if err != nil {
+		return "", err
 	}
 
 	query := url.Values{}
@@ -99,35 +175,105 @@ func Read(ctx context.Context, client *http.Client, baseURL, token, rawArgs stri
 	}
 	query.Set("dir", dir)
 
-	endpoint := strings.TrimRight(baseURL, "/") + "/_matrix/client/v3/rooms/" + url.PathEscape(args.RoomID) + "/messages"
-	if encoded := query.Encode(); encoded != "" {
-		endpoint += "?" + encoded
-	}
+	endpoint := c.buildURL("/_matrix/client/v3/rooms/"+url.PathEscape(args.RoomID)+"/messages", query)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
+	var result map[string]interface{}
+	if err := c.doGet(ctx, endpoint, &result); err != nil {
 		return "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	var out map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", err
-	}
-	if errText, ok := out["error"].(string); ok {
-		return "", errors.New(errText)
-	}
-
-	payload, err := json.Marshal(out)
+	payload, err := json.Marshal(result)
 	if err != nil {
 		return "", err
 	}
 	return string(payload), nil
+}
+
+// parseWriteArgs parses and validates arguments for the write operation
+func parseWriteArgs(rawArgs string) (writeArgs, error) {
+	var args writeArgs
+	if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
+		return writeArgs{}, fmt.Errorf("invalid matrix_write args: %w", err)
+	}
+	if strings.TrimSpace(args.RoomID) == "" {
+		return writeArgs{}, errors.New("room_id is required")
+	}
+	if strings.TrimSpace(args.Message) == "" {
+		return writeArgs{}, errors.New("message is required")
+	}
+	return args, nil
+}
+
+// parseReadArgs parses and validates arguments for the read operation
+func parseReadArgs(rawArgs string) (readArgs, error) {
+	var args readArgs
+	if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
+		return readArgs{}, fmt.Errorf("invalid matrix_read args: %w", err)
+	}
+	if strings.TrimSpace(args.RoomID) == "" {
+		return readArgs{}, errors.New("room_id is required")
+	}
+	return args, nil
+}
+
+// buildURL constructs a full URL from a path and query parameters
+func (c *Client) buildURL(path string, query url.Values) string {
+	endpoint := strings.TrimRight(c.baseURL, "/") + path
+	if encoded := query.Encode(); encoded != "" {
+		endpoint += "?" + encoded
+	}
+	return endpoint
+}
+
+// doPost performs an authenticated POST request and decodes the response
+func (c *Client) doPost(ctx context.Context, endpoint string, body []byte, result interface{}) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+	return c.doRequest(req, result)
+}
+
+// doGet performs an authenticated GET request and decodes the response
+func (c *Client) doGet(ctx context.Context, endpoint string, result interface{}) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/json")
+	return c.doRequest(req, result)
+}
+
+// doRequest executes an HTTP request and handles common response patterns
+func (c *Client) doRequest(req *http.Request, result interface{}) error {
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var data map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return err
+	}
+
+	if errText, ok := data["error"].(string); ok {
+		return errors.New(errText)
+	}
+
+	if result != nil {
+		// Copy data into the result by re-marshaling and unmarshaling
+		jsonData, err := json.Marshal(data)
+		if err != nil {
+			return err
+		}
+		if err := json.Unmarshal(jsonData, result); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
