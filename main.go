@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"teine-andres/dbmodule"
+	"teine-andres/dbmodule/repositories"
 	"teine-andres/matrixmodule"
 )
 
@@ -88,19 +88,22 @@ func main() {
 		defer cleanup()
 	}
 
-	apiKey, err := loadSystemCredential(ctx, pool, "OPENROUTER_API_KEY")
+	credRepo := repositories.NewCredentialRepository(pool)
+	promptRepo := repositories.NewPromptRepository(pool)
+
+	apiKey, err := credRepo.GetSystemCredential(ctx, "OPENROUTER_API_KEY")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 
-	model, err := loadSystemCredential(ctx, pool, "OPENROUTER_MODEL")
+	model, err := credRepo.GetSystemCredential(ctx, "OPENROUTER_MODEL")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 
-	baseURL, err := loadSystemCredential(ctx, pool, "OPENROUTER_BASE_URL")
+	baseURL, err := credRepo.GetSystemCredential(ctx, "OPENROUTER_BASE_URL")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -108,7 +111,7 @@ func main() {
 
 	loopLimit := parseLoopLimit(os.Getenv("TOOL_LOOP_LIMIT"))
 
-	initialPrompt, err := loadInitialPrompt(ctx, pool)
+	initialPrompt, err := loadInitialPrompt(ctx, promptRepo)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -144,7 +147,7 @@ func main() {
 		}
 
 		for _, call := range respMsg.ToolCalls {
-			result := executeTool(ctx, httpClient, pool, call)
+			result := executeTool(ctx, httpClient, pool, credRepo, call)
 			messages = append(messages, message{
 				Role:       "tool",
 				ToolCallID: call.ID,
@@ -170,76 +173,29 @@ func parseLoopLimit(value string) int {
 	return limit
 }
 
-func loadSystemCredential(ctx context.Context, pool *dbmodule.Pool, name string) (string, error) {
-	if pool == nil {
-		return "", errors.New("DATABASE_URL is not configured")
+func loadInitialPrompt(ctx context.Context, promptRepo *repositories.PromptRepository) (string, error) {
+	identityPrompts, err := promptRepo.GetIdentityPrompts(ctx)
+	if err != nil {
+		return "", err
 	}
-
-	dbCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	var secret string
-	err := pool.QueryRow(dbCtx, "SELECT secret FROM system_credentials WHERE name = $1", name).Scan(&secret)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", fmt.Errorf("system_credentials %s is required", name)
-	}
+	selfPrompts, err := promptRepo.GetSelfPrompts(ctx)
 	if err != nil {
 		return "", err
 	}
 
-	secret = strings.TrimSpace(secret)
-	if secret == "" {
-		return "", fmt.Errorf("system_credentials %s is required", name)
+	var allPrompts []string
+	for _, p := range identityPrompts {
+		allPrompts = append(allPrompts, p.Prompt)
+	}
+	for _, p := range selfPrompts {
+		allPrompts = append(allPrompts, p.Prompt)
 	}
 
-	return secret, nil
-}
-
-func loadInitialPrompt(ctx context.Context, pool *dbmodule.Pool) (string, error) {
-	identityPrompts, err := readPrompts(ctx, pool, "SELECT prompt FROM identity ORDER BY load_order ASC")
-	if err != nil {
-		return "", err
-	}
-	selfPrompts, err := readPrompts(ctx, pool, "SELECT prompt FROM self ORDER BY load_order ASC")
-	if err != nil {
-		return "", err
-	}
-
-	prompts := append(identityPrompts, selfPrompts...)
-	if len(prompts) == 0 {
+	if len(allPrompts) == 0 {
 		return "", errors.New("no startup prompts found")
 	}
 
-	return strings.Join(prompts, "\n\n"), nil
-}
-
-func readPrompts(ctx context.Context, pool *dbmodule.Pool, query string) ([]string, error) {
-	if pool == nil {
-		return nil, errors.New("DATABASE_URL is not configured")
-	}
-
-	dbCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-
-	rows, err := pool.Query(dbCtx, query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var prompts []string
-	for rows.Next() {
-		var prompt string
-		if err := rows.Scan(&prompt); err != nil {
-			return nil, err
-		}
-		prompts = append(prompts, prompt)
-	}
-	if rows.Err() != nil {
-		return nil, rows.Err()
-	}
-
-	return prompts, nil
+	return strings.Join(allPrompts, "\n\n"), nil
 }
 
 func buildTools() []tool {
@@ -366,16 +322,16 @@ func callChat(ctx context.Context, client *http.Client, apiKey, baseURL string, 
 	return out.Choices[0].Message, nil
 }
 
-func executeTool(ctx context.Context, client *http.Client, pool *dbmodule.Pool, call toolCall) string {
+func executeTool(ctx context.Context, client *http.Client, pool *dbmodule.Pool, credRepo *repositories.CredentialRepository, call toolCall) string {
 	switch call.Function.Name {
 	case "db_read":
 		return runReadTool(ctx, pool, call.Function.Arguments)
 	case "db_modify":
 		return runModifyTool(ctx, pool, call.Function.Arguments)
 	case "matrix_write":
-		return runMatrixWriteTool(ctx, client, pool, call.Function.Arguments)
+		return runMatrixWriteTool(ctx, client, credRepo, call.Function.Arguments)
 	case "matrix_read":
-		return runMatrixReadTool(ctx, client, pool, call.Function.Arguments)
+		return runMatrixReadTool(ctx, client, credRepo, call.Function.Arguments)
 	default:
 		return toolError(fmt.Sprintf("unknown tool: %s", call.Function.Name))
 	}
@@ -416,12 +372,12 @@ func parseQueryArgs(rawArgs, toolName string) (string, error) {
 	return strings.TrimSpace(args.Query), nil
 }
 
-func runMatrixWriteTool(ctx context.Context, client *http.Client, pool *dbmodule.Pool, rawArgs string) string {
-	baseURL, err := loadSystemCredential(ctx, pool, "MATRIX_BASE_URL")
+func runMatrixWriteTool(ctx context.Context, client *http.Client, credRepo *repositories.CredentialRepository, rawArgs string) string {
+	baseURL, err := credRepo.GetSystemCredential(ctx, "MATRIX_BASE_URL")
 	if err != nil {
 		return toolError(err.Error())
 	}
-	token, err := loadSystemCredential(ctx, pool, "MATRIX_ACCESS_TOKEN")
+	token, err := credRepo.GetSystemCredential(ctx, "MATRIX_ACCESS_TOKEN")
 	if err != nil {
 		return toolError(err.Error())
 	}
@@ -433,12 +389,12 @@ func runMatrixWriteTool(ctx context.Context, client *http.Client, pool *dbmodule
 	return result
 }
 
-func runMatrixReadTool(ctx context.Context, client *http.Client, pool *dbmodule.Pool, rawArgs string) string {
-	baseURL, err := loadSystemCredential(ctx, pool, "MATRIX_BASE_URL")
+func runMatrixReadTool(ctx context.Context, client *http.Client, credRepo *repositories.CredentialRepository, rawArgs string) string {
+	baseURL, err := credRepo.GetSystemCredential(ctx, "MATRIX_BASE_URL")
 	if err != nil {
 		return toolError(err.Error())
 	}
-	token, err := loadSystemCredential(ctx, pool, "MATRIX_ACCESS_TOKEN")
+	token, err := credRepo.GetSystemCredential(ctx, "MATRIX_ACCESS_TOKEN")
 	if err != nil {
 		return toolError(err.Error())
 	}
