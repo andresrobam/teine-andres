@@ -1,17 +1,38 @@
-version: '3.8'
-
 services:
-  postgres:
-    image: postgres:latest
+  teine-postgres:
+    image: postgres:18
     container_name: teine-postgres
     environment:
       POSTGRES_USER: owner
-      POSTGRES_PASSWORD: ownerpass
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD_OWNER:?DATABASE_PASSWORD_OWNER is required}
       POSTGRES_DB: teine
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U owner -d teine"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
 
-volumes:
-  postgres_data:
+  teine-andres:
+    image: ghcr.io/andresrobam/teine-andres:latest
+    container_name: teine-andres
+    depends_on:
+      teine-postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://teine-postgres:5432/teine?sslmode=disable
+      DATABASE_PASSWORD_OWNER: ${DATABASE_PASSWORD_OWNER:?DATABASE_PASSWORD_OWNER is required}
+      DATABASE_PASSWORD_AGENT: ${DATABASE_PASSWORD_AGENT:?DATABASE_PASSWORD_AGENT is required}
+      EXEC_SSH_HOST: ${EXEC_SSH_HOST:?EXEC_SSH_HOST is required}
+      EXEC_SSH_USER: ${EXEC_SSH_USER:-teine-andres}
+      EXEC_SSH_PORT: ${EXEC_SSH_PORT:-22}
+      EXEC_SSH_KEY_PATH: /app/data/id_ed25519
+      EXEC_SSH_TIMEOUT: ${EXEC_SSH_TIMEOUT:-30}
+      TOOL_LOOP_LIMIT: ${TOOL_LOOP_LIMIT:-12}
+    volumes:
+      - ./data/teine-andres:/app/data
+    restart: unless-stopped

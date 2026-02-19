@@ -22,8 +22,8 @@ FROM alpine:3.19
 
 WORKDIR /app
 
-# Install ca-certificates for HTTPS connections
-RUN apk add --no-cache ca-certificates
+# Install ca-certificates for HTTPS and openssh-client for SSH/keygen
+RUN apk add --no-cache ca-certificates openssh-client
 
 # Copy the binary from builder
 COPY --from=builder /app/teine-andres .

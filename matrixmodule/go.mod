@@ -1,3 +1,3 @@
 module teine-andres/matrixmodule
 
-go 1.22
+go 1.26

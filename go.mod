@@ -4,10 +4,13 @@ go 1.26
 
 require (
 	teine-andres/dbmodule v0.0.0
+	teine-andres/execmodule v0.0.0
 	teine-andres/matrixmodule v0.0.0
 )
 
 replace teine-andres/dbmodule => ./dbmodule
+
+replace teine-andres/execmodule => ./execmodule
 
 replace teine-andres/matrixmodule => ./matrixmodule
 

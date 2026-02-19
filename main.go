@@ -14,6 +14,7 @@ import (
 
 	"teine-andres/dbmodule"
 	"teine-andres/dbmodule/repositories"
+	"teine-andres/execmodule"
 	"teine-andres/matrixmodule"
 )
 
@@ -140,6 +141,28 @@ func main() {
 	ownUserID := whoamiResp.UserID
 	fmt.Printf("Matrix user ID is %s\n", ownUserID)
 
+	// Initialize exec client with SSH configuration from environment
+	execHost := os.Getenv("EXEC_SSH_HOST")
+	execUser := os.Getenv("EXEC_SSH_USER")
+	execKeyPath := os.Getenv("EXEC_SSH_KEY_PATH")
+	if execHost == "" || execUser == "" || execKeyPath == "" {
+		fmt.Fprintln(os.Stderr, "EXEC_SSH_HOST, EXEC_SSH_USER, and EXEC_SSH_KEY_PATH are required")
+		os.Exit(1)
+	}
+	execTimeoutSec := 30
+	if v := os.Getenv("EXEC_SSH_TIMEOUT"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			execTimeoutSec = parsed
+		}
+	}
+	execClient := execmodule.NewClient(execmodule.Config{
+		Host:       execHost,
+		Port:       os.Getenv("EXEC_SSH_PORT"),
+		User:       execUser,
+		KeyPath:    execKeyPath,
+		TimeoutSec: execTimeoutSec,
+	})
+
 	tools := buildTools()
 	for {
 		time.Sleep(5 * time.Second)
@@ -228,7 +251,7 @@ func main() {
 
 			for _, call := range respMsg.ToolCalls {
 				fmt.Println("TOOL CALL: %v", call)
-				result := executeTool(ctx, httpClient, dualPool.Agent, credRepo, matrixClient, call)
+				result := executeTool(ctx, httpClient, dualPool.Agent, credRepo, matrixClient, execClient, call)
 				fmt.Println("TOOL RESULT: %v", result)
 				messages = append(messages, message{
 					Role:       "tool",
@@ -325,7 +348,18 @@ func buildTools() []tool {
 		}
 	}
 
-	return append(dbTools, matrixTools...)
+	// Convert exec tools to match main's tool type
+	execToolSpecs := execmodule.GetToolSpecs()
+	execTools := make([]tool, len(execToolSpecs))
+	for i, et := range execToolSpecs {
+		execTools[i] = tool{
+			Type:     et.Type,
+			Function: toolSpec(et.Function),
+		}
+	}
+
+	allTools := append(dbTools, matrixTools...)
+	return append(allTools, execTools...)
 }
 
 func callChat(ctx context.Context, client *http.Client, apiKey string, payload chatRequest) (message, error) {
@@ -363,7 +397,7 @@ func callChat(ctx context.Context, client *http.Client, apiKey string, payload c
 	return out.Choices[0].Message, nil
 }
 
-func executeTool(ctx context.Context, client *http.Client, pool *dbmodule.Pool, credRepo *repositories.CredentialRepository, matrixClient *matrixmodule.Client, call toolCall) string {
+func executeTool(ctx context.Context, client *http.Client, pool *dbmodule.Pool, credRepo *repositories.CredentialRepository, matrixClient *matrixmodule.Client, execClient *execmodule.Client, call toolCall) string {
 	switch call.Function.Name {
 	case "db_read":
 		return runReadTool(ctx, pool, call.Function.Arguments)
@@ -371,6 +405,12 @@ func executeTool(ctx context.Context, client *http.Client, pool *dbmodule.Pool, 
 		return runModifyTool(ctx, pool, call.Function.Arguments)
 	case "matrix_write", "matrix_read":
 		result, err := matrixClient.ExecuteTool(ctx, call.Function.Name, call.Function.Arguments)
+		if err != nil {
+			return toolError(err.Error())
+		}
+		return result
+	case "exec":
+		result, err := execClient.ExecuteTool(ctx, call.Function.Name, call.Function.Arguments)
 		if err != nil {
 			return toolError(err.Error())
 		}
