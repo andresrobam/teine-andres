@@ -75,22 +75,29 @@ func main() {
 	ctx := context.Background()
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 
-	pool, cleanup, err := dbmodule.NewPool(ctx, os.Getenv("DATABASE_URL"))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "failed to create db pool:", err)
+	// Read database configuration from environment
+	baseDatabaseURL := os.Getenv("DATABASE_URL")
+	agentPassword := os.Getenv("DATABASE_PASSWORD_AGENT")
+	ownerPassword := os.Getenv("DATABASE_PASSWORD_OWNER")
+
+	if baseDatabaseURL == "" {
+		fmt.Fprintln(os.Stderr, "DATABASE_URL is required")
 		os.Exit(1)
 	}
-	if pool == nil {
-		fmt.Fprintln(os.Stderr, "DATABASE_URL is required to load startup data")
+
+	dualPool, cleanup, err := dbmodule.NewPool(ctx, baseDatabaseURL, agentPassword, ownerPassword)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "failed to create db pools:", err)
 		os.Exit(1)
 	}
 	if cleanup != nil {
 		defer cleanup()
 	}
 
-	credRepo := repositories.NewCredentialRepository(pool)
-	promptRepo := repositories.NewPromptRepository(pool)
-	syncRepo := repositories.NewSyncStateRepository(pool)
+	// Use owner pool for repositories (all non-tool database operations)
+	credRepo := repositories.NewCredentialRepository(dualPool.Owner)
+	promptRepo := repositories.NewPromptRepository(dualPool.Owner)
+	syncRepo := repositories.NewSyncStateRepository(dualPool.Owner)
 
 	apiKey, err := credRepo.GetSystemCredential(ctx, "OPENROUTER_API_KEY")
 	if err != nil {
@@ -221,7 +228,7 @@ func main() {
 
 			for _, call := range respMsg.ToolCalls {
 				fmt.Println("TOOL CALL: %v", call)
-				result := executeTool(ctx, httpClient, pool, credRepo, matrixClient, call)
+				result := executeTool(ctx, httpClient, dualPool.Agent, credRepo, matrixClient, call)
 				fmt.Println("TOOL RESULT: %v", result)
 				messages = append(messages, message{
 					Role:       "tool",

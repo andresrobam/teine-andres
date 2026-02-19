@@ -28,7 +28,6 @@ GRANT SELECT, INSERT ON TABLE tasks TO agent;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE task_status TO agent;
 GRANT SELECT ON TABLE system_credentials TO agent;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE personal_credentials TO agent;
-GRANT INSERT ON TABLE log TO agent;
 
 -- migrate:down
 REVOKE ALL ON TABLE identity FROM agent;

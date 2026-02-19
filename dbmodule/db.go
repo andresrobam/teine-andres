@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -12,20 +14,77 @@ import (
 
 type Pool = pgxpool.Pool
 
-func NewPool(ctx context.Context, databaseURL string) (*Pool, func(), error) {
-	if strings.TrimSpace(databaseURL) == "" {
-		return nil, nil, nil
+// DualPool holds both agent and owner database connection pools
+type DualPool struct {
+	Agent *Pool
+	Owner *Pool
+}
+
+// buildConnectionString constructs a full PostgreSQL connection string
+// by injecting the username and password into a base URL
+func buildConnectionString(baseURL, username, password string) (string, error) {
+	if strings.TrimSpace(baseURL) == "" {
+		return "", errors.New("base database URL is required")
+	}
+	if strings.TrimSpace(password) == "" {
+		return "", fmt.Errorf("password for user %s is required", username)
+	}
+
+	// Parse the base URL
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid database URL: %w", err)
+	}
+
+	// Set user info with hardcoded username and provided password
+	u.User = url.UserPassword(username, password)
+
+	return u.String(), nil
+}
+
+// NewPool creates two separate connection pools: one for the agent user and one for the owner user
+// baseURL: The database URL without credentials (e.g., "postgres://localhost:5432/teine?sslmode=disable")
+// agentPassword: Password for the 'agent' user
+// ownerPassword: Password for the 'owner' user
+func NewPool(ctx context.Context, baseURL, agentPassword, ownerPassword string) (*DualPool, func(), error) {
+	// Build connection strings with hardcoded usernames
+	agentURL, err := buildConnectionString(baseURL, "agent", agentPassword)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to build agent connection string: %w", err)
+	}
+
+	ownerURL, err := buildConnectionString(baseURL, "owner", ownerPassword)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to build owner connection string: %w", err)
 	}
 
 	dbCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	pool, err := pgxpool.New(dbCtx, databaseURL)
+	// Create agent pool
+	agentPool, err := pgxpool.New(dbCtx, agentURL)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("failed to create agent pool: %w", err)
 	}
 
-	return pool, pool.Close, nil
+	// Create owner pool
+	ownerPool, err := pgxpool.New(dbCtx, ownerURL)
+	if err != nil {
+		agentPool.Close()
+		return nil, nil, fmt.Errorf("failed to create owner pool: %w", err)
+	}
+
+	dualPool := &DualPool{
+		Agent: agentPool,
+		Owner: ownerPool,
+	}
+
+	cleanup := func() {
+		agentPool.Close()
+		ownerPool.Close()
+	}
+
+	return dualPool, cleanup, nil
 }
 
 func Read(ctx context.Context, pool *Pool, query string) (string, error) {

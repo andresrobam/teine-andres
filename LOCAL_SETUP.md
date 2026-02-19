@@ -8,5 +8,7 @@ bash scripts/seed_test_credentials.sh
 # 4. Run the app
 go run .
 Environment Variables:
-export DATABASE_URL="postgres://agent:agentpass@localhost:5432/teine?sslmode=disable"
+export DATABASE_URL="postgres://localhost:5432/teine?sslmode=disable"
+export DATABASE_PASSWORD_AGENT="agentpass"
+export DATABASE_PASSWORD_OWNER="ownerpass"
 export TOOL_LOOP_LIMIT=12  # optional

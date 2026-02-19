@@ -76,22 +76,5 @@ This database stores the agent's core prompts, state, memories, tasks, credentia
   - created_at timestamptz
   - updated_at timestamptz
 
-### log (insert-only)
-- Purpose: Append-only audit log of agent actions and notable events.
-- Use: Insert log records; never read, update, or delete.
-- Schema:
-  - id uuid
-  - event_type text
-  - payload jsonb
-  - created_at timestamptz
-
-### matrix_sync_state (select + update only)
-- Purpose: Tracks the Matrix sync token for retrieving unread messages.
-- Use: Read the current token; update the next_batch value after sync. Never insert or delete.
-- Schema:
-  - id uuid (primary key)
-  - next_batch text (nullable) - The sync token from Matrix /sync endpoint
-  - updated_at timestamptz
-
 ## General rules
 - Respect table-level permissions and never attempt prohibited operations.
