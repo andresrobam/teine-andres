@@ -1,6 +1,6 @@
 module teine-andres
 
-go 1.22
+go 1.26
 
 require (
 	teine-andres/dbmodule v0.0.0
