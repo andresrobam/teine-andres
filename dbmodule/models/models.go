@@ -21,6 +21,7 @@ type Task struct {
 	Status          *string    `db:"status"`
 	Progress        []byte     `db:"progress"`
 	StatusUpdatedAt *time.Time `db:"status_updated_at"`
+	PostponedUntil  *time.Time `db:"postponed_until"`
 }
 
 type LogEntry struct {
