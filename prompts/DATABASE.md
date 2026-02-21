@@ -52,8 +52,10 @@ This database stores the agent's core prompts, state, memories, tasks, credentia
   - task_id uuid (primary key, references tasks.id)
   - status task_status_enum
   - progress jsonb
+  - postponed_until timestamptz (nullable)
   - updated_at timestamptz
 - status enum values: pending, in_progress, blocked, done, cancelled
+- postponed_until: If set, the task will be filtered out from selection until the specified time is reached. This allows creating delayed tasks/messages that won't be processed until later.
 
 ### system_credentials (read-only)
 - Purpose: Owner-provided credentials (API keys, tokens) the agent may need.
