@@ -72,118 +72,101 @@ type dbArgs struct {
 	Query string `json:"query"`
 }
 
+func getRequiredEnv(key string) string {
+	out := os.Getenv(key)
+	if out == "" {
+		panic(fmt.Sprint("Required environment variable \"%s\" not defined.", key))
+	}
+	return out
+}
+
+func getEnvNumber(key string, defaultValue int) int {
+	str := os.Getenv(key)
+	if str == "" {
+		return defaultValue
+	}
+	out, err := strconv.Atoi(str)
+	if err != nil {
+		panic(fmt.Sprint("Cannot convert value of \"%s\": \"%s\" to an integer.", key, str))
+	}
+	return out
+}
+
+func getRequiredSystemCredential(repo *repositories.CredentialRepository, ctx context.Context, key string) string {
+	secret, err := repo.GetSystemCredential(ctx, "OPENROUTER_API_KEY")
+	if err != nil {
+		panic(fmt.Sprintf("Error getting system credential %s: %w", key, err))
+	}
+	return secret
+}
+
 func main() {
 	ctx := context.Background()
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 
-	// Read database configuration from environment
-	baseDatabaseURL := os.Getenv("DATABASE_URL")
-	agentPassword := os.Getenv("DATABASE_PASSWORD_AGENT")
-	ownerPassword := os.Getenv("DATABASE_PASSWORD_OWNER")
+	baseDatabaseURL := getRequiredEnv("DATABASE_URL")
+	agentPassword := getRequiredEnv("DATABASE_PASSWORD_AGENT")
+	ownerPassword := getRequiredEnv("DATABASE_PASSWORD_OWNER")
+	ownerFirstName := getRequiredEnv("OWNER_FIRST_NAME")
+	ownerMatrixId := getEnvNumber("MATRIX_OWNER_ID")
+	loopLimit := getEnvNumber("TOOL_LOOP_LIMIT", 12)
 
-	if baseDatabaseURL == "" {
-		fmt.Fprintln(os.Stderr, "DATABASE_URL is required")
-		os.Exit(1)
-	}
+	execClient := execmodule.NewClient(execmodule.Config{
+		Host:       getRequiredEnv("EXEC_SSH_HOST"),
+		Port:       getEnvNumber("EXEC_SSH_PORT", 22),
+		User:       getRequiredEnv("EXEC_SSH_USER"),
+		KeyPath:    getRequiredEnv("EXEC_SSH_KEY_PATH"),
+		TimeoutSec: getEnvNumber("EXEC_SSH_TIMEOUT", 60),
+	})
 
 	dualPool, cleanup, err := dbmodule.NewPool(ctx, baseDatabaseURL, agentPassword, ownerPassword)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "failed to create db pools:", err)
+		fmt.Fprintln(os.Stderr, "Failed to create DB pools:", err)
 		os.Exit(1)
 	}
 	if cleanup != nil {
 		defer cleanup()
 	}
 
-	// Use owner pool for repositories (all non-tool database operations)
 	credRepo := repositories.NewCredentialRepository(dualPool.Owner)
 	promptRepo := repositories.NewPromptRepository(dualPool.Owner)
 	syncRepo := repositories.NewSyncStateRepository(dualPool.Owner)
 
-	apiKey, err := credRepo.GetSystemCredential(ctx, "OPENROUTER_API_KEY")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
+	apiKey := getRequiredSystemCredential(credRepo, ctx, "OPENROUTER_API_KEY")
+	model := getRequiredSystemCredential(credRepo, ctx, "OPENROUTER_MODEL")
+	matrixBaseURL := getRequiredSystemCredential(credRepo, ctx, "MATRIX_BASE_URL")
+	matrixToken := getRequiredSystemCredential(credRepo, ctx, "MATRIX_ACCESS_TOKEN")
 
-	model, err := credRepo.GetSystemCredential(ctx, "OPENROUTER_MODEL")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	loopLimit := parseLoopLimit(os.Getenv("TOOL_LOOP_LIMIT"))
-
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	// Initialize Matrix client with credentials
-	matrixBaseURL, err := credRepo.GetSystemCredential(ctx, "MATRIX_BASE_URL")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	matrixToken, err := credRepo.GetSystemCredential(ctx, "MATRIX_ACCESS_TOKEN")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
 	matrixClient := matrixmodule.NewClient(httpClient, matrixBaseURL, matrixToken)
-
-	// Get the agent's own Matrix user ID
 	whoamiResp, err := matrixClient.Whoami(ctx)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "failed to get Matrix user ID:", err)
-		os.Exit(1)
+		panic(fmt.Sprint(os.Stderr, "failed to get Matrix user ID: ", err))
 	}
-	ownUserID := whoamiResp.UserID
-	fmt.Printf("Matrix user ID is %s\n", ownUserID)
-
-	// Initialize exec client with SSH configuration from environment
-	execHost := os.Getenv("EXEC_SSH_HOST")
-	execUser := os.Getenv("EXEC_SSH_USER")
-	execKeyPath := os.Getenv("EXEC_SSH_KEY_PATH")
-	if execHost == "" || execUser == "" || execKeyPath == "" {
-		fmt.Fprintln(os.Stderr, "EXEC_SSH_HOST, EXEC_SSH_USER, and EXEC_SSH_KEY_PATH are required")
-		os.Exit(1)
-	}
-	execTimeoutSec := 30
-	if v := os.Getenv("EXEC_SSH_TIMEOUT"); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
-			execTimeoutSec = parsed
-		}
-	}
-	execClient := execmodule.NewClient(execmodule.Config{
-		Host:       execHost,
-		Port:       os.Getenv("EXEC_SSH_PORT"),
-		User:       execUser,
-		KeyPath:    execKeyPath,
-		TimeoutSec: execTimeoutSec,
-	})
+	agentMatrixId := whoamiResp.UserID
 
 	tools := buildTools()
+
+MainLoop:
 	for {
-		time.Sleep(5 * time.Second)
+		time.Sleep(1 * time.Second)
 		initialPrompt, err := loadInitialPrompt(ctx, promptRepo)
-		initialPrompt = append(initialPrompt, "Your own Matrix username is: "+ownUserID)
 		nextBatch, err := syncRepo.GetNextBatch(ctx)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "failed to get sync token:", err)
+			fmt.Fprintln(os.Stderr, "Failed to get Matrix sync token:", err)
+			continue
 		}
 
 		syncResp, err := matrixClient.Sync(ctx, nextBatch)
 		if err != nil {
+			fmt.Fprintln(os.Stderr, "Failed to run Matrix sync:", err)
 			continue
 		}
 
-		// Join all invited rooms
 		if syncResp.Rooms.Invite != nil {
 			for roomID := range syncResp.Rooms.Invite {
 				if err := matrixClient.JoinRoom(ctx, roomID); err != nil {
 					fmt.Fprintf(os.Stderr, "failed to join room %s: %v\n", roomID, err)
-					continue
+					continue MainLoop
 				}
 				fmt.Printf("Joined room %s\n", roomID)
 			}
@@ -191,8 +174,9 @@ func main() {
 
 		if err := syncRepo.UpdateNextBatch(ctx, syncResp.NextBatch); err != nil {
 			fmt.Fprintln(os.Stderr, "failed to update sync token:", err)
+			continue
 		}
-		// Collect messages from joined rooms
+
 		var contents []string
 		if syncResp.Rooms.Join != nil {
 			for roomID, joinedRoom := range syncResp.Rooms.Join {
@@ -200,7 +184,7 @@ func main() {
 				for _, event := range joinedRoom.Timeline.Events {
 					var eventMap map[string]any
 					json.Unmarshal(event, &eventMap)
-					if eventMap["sender"] != ownUserID {
+					if eventMap["sender"] != agentMatrixId {
 						events = append(events, string(event))
 					}
 				}
@@ -211,7 +195,7 @@ func main() {
 		}
 
 		if len(contents) == 0 {
-			fmt.Println("No messages, waiting...")
+			fmt.Println("No messages or tasks, waiting...")
 			continue
 		}
 
@@ -238,10 +222,9 @@ func main() {
 			})
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "chat error:", err)
-				os.Exit(1)
+				continue MainLoop
 			}
 
-			fmt.Println("%v", respMsg)
 			messages = append(messages, respMsg)
 
 			if len(respMsg.ToolCalls) == 0 {
@@ -252,7 +235,7 @@ func main() {
 			for _, call := range respMsg.ToolCalls {
 				fmt.Println("TOOL CALL: %v", call)
 				result := executeTool(ctx, httpClient, dualPool.Agent, credRepo, matrixClient, execClient, call)
-				fmt.Println("TOOL RESULT: %v", result)
+				fmt.Println("TOOL CALL RESULT: %v", result)
 				messages = append(messages, message{
 					Role:       "tool",
 					ToolCallID: call.ID,
@@ -261,22 +244,6 @@ func main() {
 			}
 		}
 	}
-
-	fmt.Fprintln(os.Stderr, "tool loop exceeded limit")
-	os.Exit(1)
-}
-
-func parseLoopLimit(value string) int {
-	const defaultLimit = 12
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return defaultLimit
-	}
-	limit, err := strconv.Atoi(trimmed)
-	if err != nil || limit <= 0 {
-		return defaultLimit
-	}
-	return limit
 }
 
 func loadInitialPrompt(ctx context.Context, promptRepo *repositories.PromptRepository) ([]string, error) {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -15,7 +16,7 @@ import (
 // Config holds the SSH connection details for the remote sandbox VM.
 type Config struct {
 	Host       string // Remote VM hostname or IP
-	Port       string // SSH port (default "22")
+	Port       int    // SSH port (default "22")
 	User       string // SSH username
 	KeyPath    string // Path to SSH private key file
 	TimeoutSec int    // Command timeout in seconds (default 30)
@@ -28,12 +29,6 @@ type Client struct {
 
 // NewClient creates a new exec client with the given SSH configuration.
 func NewClient(cfg Config) *Client {
-	if cfg.Port == "" {
-		cfg.Port = "22"
-	}
-	if cfg.TimeoutSec <= 0 {
-		cfg.TimeoutSec = 30
-	}
 	return &Client{config: cfg}
 }
 
@@ -102,7 +97,7 @@ func (c *Client) run(ctx context.Context, rawArgs string) (string, error) {
 
 	sshArgs := []string{
 		"-i", c.config.KeyPath,
-		"-p", c.config.Port,
+		"-p", strconv.Itoa(c.config.Port),
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "BatchMode=yes",
 		fmt.Sprintf("%s@%s", c.config.User, c.config.Host),
