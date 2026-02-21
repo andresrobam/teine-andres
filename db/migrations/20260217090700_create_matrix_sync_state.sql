@@ -5,7 +5,6 @@ CREATE TABLE matrix_sync_state (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
--- Grant SELECT and UPDATE permissions (no DELETE) to agent
 REVOKE ALL ON TABLE matrix_sync_state FROM agent;
 
 -- Seed with initial row
