@@ -137,7 +137,7 @@ func getEnvNumber(key string, defaultValue int) int {
 }
 
 func getRequiredSystemCredential(repo *repositories.CredentialRepository, ctx context.Context, key string) string {
-	secret, err := repo.GetSystemCredential(ctx, "OPENROUTER_API_KEY")
+	secret, err := repo.GetSystemCredential(ctx, key)
 	if err != nil {
 		panic(fmt.Sprintf("Error getting system credential %s: %w", key, err))
 	}
