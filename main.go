@@ -290,7 +290,6 @@ MainLoop:
 		}
 
 		if len(contents) == 0 {
-			fmt.Println("No messages or tasks, waiting...")
 			continue
 		}
 

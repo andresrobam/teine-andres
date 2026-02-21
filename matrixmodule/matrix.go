@@ -324,11 +324,6 @@ func (c *Client) Sync(ctx context.Context, since string) (*SyncResponse, error) 
 		return nil, err
 	}
 
-	fmt.Println(result.NextBatch)
-	for roomId := range result.Rooms.Invite {
-		fmt.Println(roomId)
-	}
-
 	return &result, nil
 }
 
