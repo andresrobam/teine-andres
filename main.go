@@ -363,6 +363,11 @@ func loadInitialPrompt(ctx context.Context, promptRepo *repositories.PromptRepos
 		allPrompts = append(allPrompts, p.Prompt)
 	}
 
+	// Add current time to prompt
+	currentTime := time.Now().UTC().Format("2006-01-02 15:04:05 MST")
+	timePrompt := fmt.Sprintf("Current time: %s", currentTime)
+	allPrompts = append(allPrompts, timePrompt)
+
 	return allPrompts, nil
 }
 
