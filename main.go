@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -72,6 +73,41 @@ type dbArgs struct {
 	Query string `json:"query"`
 }
 
+func syncPromptsFromFiles(ctx context.Context, promptRepo *repositories.PromptRepository) error {
+	promptsDir := "prompts"
+
+	entries, err := os.ReadDir(promptsDir)
+	if err != nil {
+		return fmt.Errorf("failed to read prompts directory: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+
+		if !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+
+		title := strings.TrimSuffix(entry.Name(), ".md")
+		filePath := filepath.Join(promptsDir, entry.Name())
+
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			return fmt.Errorf("failed to read file %s: %w", filePath, err)
+		}
+
+		if err := promptRepo.UpsertIdentityPrompt(ctx, title, string(content)); err != nil {
+			return fmt.Errorf("failed to upsert prompt %s: %w", title, err)
+		}
+
+		fmt.Printf("Synced prompt: %s\n", title)
+	}
+
+	return nil
+}
+
 func getRequiredEnv(key string) string {
 	out := os.Getenv(key)
 	if out == "" {
@@ -133,6 +169,11 @@ func main() {
 	credRepo := repositories.NewCredentialRepository(dualPool.Owner)
 	promptRepo := repositories.NewPromptRepository(dualPool.Owner)
 	syncRepo := repositories.NewSyncStateRepository(dualPool.Owner)
+
+	if err := syncPromptsFromFiles(ctx, promptRepo); err != nil {
+		fmt.Fprintln(os.Stderr, "Failed to sync prompts from files:", err)
+		os.Exit(1)
+	}
 
 	apiKey := getRequiredSystemCredential(credRepo, ctx, "OPENROUTER_API_KEY")
 	model := getRequiredSystemCredential(credRepo, ctx, "OPENROUTER_MODEL")

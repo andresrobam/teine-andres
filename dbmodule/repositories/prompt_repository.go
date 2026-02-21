@@ -74,3 +74,21 @@ func (r *PromptRepository) GetSelfPrompts(ctx context.Context) ([]models.Prompt,
 
 	return prompts, nil
 }
+
+func (r *PromptRepository) UpsertIdentityPrompt(ctx context.Context, title string, prompt string) error {
+	if r.pool == nil {
+		return errors.New("DATABASE_URL is not configured")
+	}
+
+	dbCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	query := `
+		INSERT INTO identity (title, prompt, load_order)
+		VALUES ($1, $2, COALESCE((SELECT MAX(load_order) FROM identity), 0) + 1)
+		ON CONFLICT (title) DO UPDATE SET prompt = EXCLUDED.prompt
+	`
+
+	_, err := r.pool.Exec(dbCtx, query, title, prompt)
+	return err
+}
