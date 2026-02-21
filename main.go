@@ -62,7 +62,8 @@ type chatRequest struct {
 
 type chatResponse struct {
 	Choices []struct {
-		Message message `json:"message"`
+		Message      message `json:"message"`
+		FinishReason string  `json:"finish_reason"`
 	} `json:"choices"`
 	Error *struct {
 		Message string `json:"message"`
@@ -307,9 +308,11 @@ MainLoop:
 
 		fmt.Println(messages)
 
-		for range loopLimit {
+		var finishReason string
 
-			respMsg, err := callChat(ctx, httpClient, apiKey, chatRequest{
+		for i := range loopLimit {
+
+			respMsg, fr, err := callChat(ctx, httpClient, apiKey, chatRequest{
 				Model:      model,
 				Messages:   messages,
 				Tools:      tools,
@@ -320,6 +323,7 @@ MainLoop:
 				fmt.Fprintln(os.Stderr, "chat error:", err)
 				continue MainLoop
 			}
+			finishReason = fr
 
 			messages = append(messages, respMsg)
 
@@ -338,9 +342,13 @@ MainLoop:
 					Content:    result,
 				})
 			}
+
+			if i == loopLimit-1 {
+				finishReason = "loop_limit"
+			}
 		}
 
-		fmt.Println("End of conversation loop.")
+		fmt.Println("End of conversation loop. Finish reason: " + finishReason)
 	}
 }
 
@@ -437,16 +445,16 @@ func buildTools() []tool {
 	return append(allTools, execTools...)
 }
 
-func callChat(ctx context.Context, client *http.Client, apiKey string, payload chatRequest) (message, error) {
+func callChat(ctx context.Context, client *http.Client, apiKey string, payload chatRequest) (message, string, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return message{}, err
+		return message{}, "", err
 	}
 
 	endpoint := "https://openrouter.ai/api/v1/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
-		return message{}, err
+		return message{}, "", err
 	}
 
 	req.Header.Set("Authorization", "Bearer "+apiKey)
@@ -454,22 +462,22 @@ func callChat(ctx context.Context, client *http.Client, apiKey string, payload c
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return message{}, err
+		return message{}, "", err
 	}
 	defer resp.Body.Close()
 
 	var out chatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return message{}, err
+		return message{}, "", err
 	}
 	if out.Error != nil {
-		return message{}, errors.New(out.Error.Message)
+		return message{}, "", errors.New(out.Error.Message)
 	}
 	if len(out.Choices) == 0 {
-		return message{}, errors.New("no choices returned")
+		return message{}, "", errors.New("no choices returned")
 	}
 
-	return out.Choices[0].Message, nil
+	return out.Choices[0].Message, out.Choices[0].FinishReason, nil
 }
 
 func executeTool(ctx context.Context, client *http.Client, pool *dbmodule.Pool, credRepo *repositories.CredentialRepository, matrixClient *matrixmodule.Client, execClient *execmodule.Client, call toolCall) string {
