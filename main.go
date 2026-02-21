@@ -303,7 +303,9 @@ MainLoop:
 			Content: "Help your owner achieve what he wants",
 		})
 
-		fmt.Println("%v", messages)
+		fmt.Println("New conversation")
+
+		fmt.Println(messages)
 
 		for range loopLimit {
 
@@ -327,9 +329,9 @@ MainLoop:
 			}
 
 			for _, call := range respMsg.ToolCalls {
-				fmt.Println("TOOL CALL: %v", call)
+				fmt.Println("TOOL CALL: ", call)
 				result := executeTool(ctx, httpClient, dualPool.Agent, credRepo, matrixClient, execClient, call)
-				fmt.Println("TOOL CALL RESULT: %v", result)
+				fmt.Println("TOOL CALL RESULT: ", result)
 				messages = append(messages, message{
 					Role:       "tool",
 					ToolCallID: call.ID,
@@ -337,6 +339,8 @@ MainLoop:
 				})
 			}
 		}
+
+		fmt.Println("End of conversation loop.")
 	}
 }
 
