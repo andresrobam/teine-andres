@@ -34,10 +34,12 @@ func (r *TaskRepository) GetTasksByStatuses(ctx context.Context, statuses []stri
 			t.created_at,
 			ts.status,
 			ts.progress,
-			ts.updated_at as status_updated_at
+			ts.updated_at as status_updated_at,
+			ts.postponed_until
 		FROM tasks t
 		LEFT JOIN task_status ts ON t.id = ts.task_id
 		WHERE ts.status = ANY($1)
+		  AND (ts.postponed_until IS NULL OR ts.postponed_until <= NOW())
 		ORDER BY t.created_at DESC
 	`
 
@@ -50,7 +52,10 @@ func (r *TaskRepository) GetTasksByStatuses(ctx context.Context, statuses []stri
 	var tasks []models.Task
 	for rows.Next() {
 		var t models.Task
-		if err := rows.Scan(&t.ID, &t.ParentID, &t.Title, &t.Description, &t.CreatedAt, &t.Status, &t.Progress, &t.StatusUpdatedAt); err != nil {
+		if err := rows.Scan(
+			&t.ID, &t.ParentID, &t.Title, &t.Description, &t.CreatedAt,
+			&t.Status, &t.Progress, &t.StatusUpdatedAt, &t.PostponedUntil,
+		); err != nil {
 			return nil, err
 		}
 		tasks = append(tasks, t)
