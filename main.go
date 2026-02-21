@@ -169,6 +169,7 @@ func main() {
 	credRepo := repositories.NewCredentialRepository(dualPool.Owner)
 	promptRepo := repositories.NewPromptRepository(dualPool.Owner)
 	syncRepo := repositories.NewSyncStateRepository(dualPool.Owner)
+	taskRepo := repositories.NewTaskRepository(dualPool.Owner)
 
 	if err := syncPromptsFromFiles(ctx, promptRepo); err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to sync prompts from files:", err)
@@ -189,6 +190,7 @@ func main() {
 	systemPromptVariables["agentMatrixId"] = agentMatrixId
 
 	tools := buildTools()
+	lastHourlyLoop := time.Now()
 
 MainLoop:
 	for {
@@ -221,7 +223,48 @@ MainLoop:
 			continue
 		}
 
+		isHourlyLoop := time.Since(lastHourlyLoop) >= 1*time.Hour
+
+		statuses := []string{"pending", "in_progress"}
+
+		if isHourlyLoop {
+			statuses = append(statuses, "blocked")
+			lastHourlyLoop = time.Now()
+		}
+
 		var contents []string
+
+		tasks, err := taskRepo.GetTasksByStatuses(ctx, statuses)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Failed to get tasks:", err)
+			continue
+		} else if len(tasks) > 0 {
+			contents = append(contents, "Here is the information about current tasks:\n")
+			taskMessages := []string{}
+			for _, task := range tasks {
+				desc := ""
+				if task.Description != nil {
+					desc = *task.Description
+				}
+				status := ""
+				if task.Status != nil {
+					status = *task.Status
+				}
+				taskMap := map[string]string{
+					"id":          task.ID.String(),
+					"title":       task.Title,
+					"description": desc,
+					"status":      status,
+				}
+				if task.ParentID != nil {
+					taskMap["parent_task_id"] = task.ParentID.String()
+				}
+				taskJSON, _ := json.Marshal(taskMap)
+				taskMessages = append(taskMessages, string(taskJSON))
+			}
+			contents = append(contents, "["+strings.Join(taskMessages, ", ")+"]")
+		}
+
 		if syncResp.Rooms.Join != nil {
 			for roomID, joinedRoom := range syncResp.Rooms.Join {
 				events := []string{}
@@ -233,7 +276,7 @@ MainLoop:
 					}
 				}
 				if len(events) > 0 {
-					contents = append(contents, fmt.Sprintf("Here are the events that happened in the Matrix room \"%s\" since the last sync:\n[%s]", roomID, strings.Join(events, ",")))
+					contents = append(contents, fmt.Sprintf("Here are the events that happened in the Matrix room \"%s\" since the last sync:\n[%s]", roomID, strings.Join(events, ", ")))
 				}
 			}
 		}
