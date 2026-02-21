@@ -116,6 +116,14 @@ func getRequiredEnv(key string) string {
 	return out
 }
 
+func getEnv(key string, defaultValue string) string {
+	out := os.Getenv(key)
+	if out == "" {
+		return defaultValue
+	}
+	return out
+}
+
 func getEnvNumber(key string, defaultValue int) int {
 	str := os.Getenv(key)
 	if str == "" {
@@ -147,13 +155,13 @@ func main() {
 	ownerPassword := getRequiredEnv("DATABASE_PASSWORD_OWNER")
 	systemPromptVariables["ownerFirstName"] = getRequiredEnv("OWNER_FIRST_NAME")
 	systemPromptVariables["ownerMatrixId"] = getRequiredEnv("MATRIX_OWNER_ID")
-	loopLimit := getEnvNumber("TOOL_LOOP_LIMIT", 12)
+	loopLimit := getEnvNumber("TOOL_LOOP_LIMIT", 20)
 	systemPromptVariables["loopLimit"] = strconv.Itoa(loopLimit)
 
 	execClient := execmodule.NewClient(execmodule.Config{
 		Host:    getRequiredEnv("EXEC_SSH_HOST"),
 		Port:    getEnvNumber("EXEC_SSH_PORT", 22),
-		User:    getRequiredEnv("EXEC_SSH_USER"),
+		User:    getEnv("EXEC_SSH_USER", "teine-andres"),
 		KeyPath: getRequiredEnv("EXEC_SSH_KEY_PATH"),
 	})
 
@@ -195,7 +203,7 @@ func main() {
 MainLoop:
 	for {
 		time.Sleep(1 * time.Second)
-		initialPrompt, err := loadInitialPrompt(ctx, promptRepo)
+		initialPrompt, err := loadInitialPrompt(ctx, promptRepo, systemPromptVariables)
 		nextBatch, err := syncRepo.GetNextBatch(ctx)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Failed to get Matrix sync token:", err)
@@ -333,7 +341,7 @@ MainLoop:
 	}
 }
 
-func loadInitialPrompt(ctx context.Context, promptRepo *repositories.PromptRepository) ([]string, error) {
+func loadInitialPrompt(ctx context.Context, promptRepo *repositories.PromptRepository, systemPromptVariables map[string]string) ([]string, error) {
 	identityPrompts, err := promptRepo.GetIdentityPrompts(ctx)
 	if err != nil {
 		return []string{}, err
@@ -345,7 +353,12 @@ func loadInitialPrompt(ctx context.Context, promptRepo *repositories.PromptRepos
 
 	var allPrompts []string
 	for _, p := range identityPrompts {
-		allPrompts = append(allPrompts, p.Prompt)
+		promptText := p.Prompt
+		for key, value := range systemPromptVariables {
+			placeholder := "{" + key + "}"
+			promptText = strings.ReplaceAll(promptText, placeholder, value)
+		}
+		allPrompts = append(allPrompts, promptText)
 	}
 	for _, p := range selfPrompts {
 		allPrompts = append(allPrompts, p.Prompt)
