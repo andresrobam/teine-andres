@@ -15,11 +15,10 @@ import (
 
 // Config holds the SSH connection details for the remote sandbox VM.
 type Config struct {
-	Host       string // Remote VM hostname or IP
-	Port       int    // SSH port (default "22")
-	User       string // SSH username
-	KeyPath    string // Path to SSH private key file
-	TimeoutSec int    // Command timeout in seconds (default 30)
+	Host    string // Remote VM hostname or IP
+	Port    int    // SSH port (default "22")
+	User    string // SSH username
+	KeyPath string // Path to SSH private key file
 }
 
 // Client wraps an SSH config and provides tool execution over SSH.
@@ -34,7 +33,8 @@ func NewClient(cfg Config) *Client {
 
 // execArgs represents the arguments for the exec tool.
 type execArgs struct {
-	Command string `json:"command"`
+	Command        string `json:"command"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty"`
 }
 
 // ToolSpec represents a tool specification for the AI model.
@@ -65,6 +65,10 @@ func GetToolSpecs() []Tool {
 							"type":        "string",
 							"description": "The shell command to execute on the remote VM",
 						},
+						"timeout_seconds": map[string]any{
+							"type":        "integer",
+							"description": "Maximum time to wait for the command to complete in seconds (default: 30)",
+						},
 					},
 					"required": []string{"command"},
 				},
@@ -91,7 +95,11 @@ func (c *Client) run(ctx context.Context, rawArgs string) (string, error) {
 		return "", err
 	}
 
-	timeout := time.Duration(c.config.TimeoutSec) * time.Second
+	timeoutSec := args.TimeoutSeconds
+	if timeoutSec == 0 {
+		timeoutSec = 30
+	}
+	timeout := time.Duration(timeoutSec) * time.Second
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -127,7 +135,7 @@ func (c *Client) run(ctx context.Context, rawArgs string) (string, error) {
 				"stdout":    stdout.String(),
 				"stderr":    stderr.String(),
 				"exit_code": -1,
-				"error":     fmt.Sprintf("command timed out after %d seconds", c.config.TimeoutSec),
+				"error":     fmt.Sprintf("command timed out after %d seconds", timeoutSec),
 			})
 			return string(result), nil
 		} else {

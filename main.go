@@ -102,21 +102,23 @@ func getRequiredSystemCredential(repo *repositories.CredentialRepository, ctx co
 
 func main() {
 	ctx := context.Background()
-	httpClient := &http.Client{Timeout: 30 * time.Second}
+	httpClient := &http.Client{Timeout: 120 * time.Second}
+
+	systemPromptVariables := make(map[string]string)
 
 	baseDatabaseURL := getRequiredEnv("DATABASE_URL")
 	agentPassword := getRequiredEnv("DATABASE_PASSWORD_AGENT")
 	ownerPassword := getRequiredEnv("DATABASE_PASSWORD_OWNER")
-	ownerFirstName := getRequiredEnv("OWNER_FIRST_NAME")
-	ownerMatrixId := getEnvNumber("MATRIX_OWNER_ID")
+	systemPromptVariables["ownerFirstName"] = getRequiredEnv("OWNER_FIRST_NAME")
+	systemPromptVariables["ownerMatrixId"] = getRequiredEnv("MATRIX_OWNER_ID")
 	loopLimit := getEnvNumber("TOOL_LOOP_LIMIT", 12)
+	systemPromptVariables["loopLimit"] = strconv.Itoa(loopLimit)
 
 	execClient := execmodule.NewClient(execmodule.Config{
-		Host:       getRequiredEnv("EXEC_SSH_HOST"),
-		Port:       getEnvNumber("EXEC_SSH_PORT", 22),
-		User:       getRequiredEnv("EXEC_SSH_USER"),
-		KeyPath:    getRequiredEnv("EXEC_SSH_KEY_PATH"),
-		TimeoutSec: getEnvNumber("EXEC_SSH_TIMEOUT", 60),
+		Host:    getRequiredEnv("EXEC_SSH_HOST"),
+		Port:    getEnvNumber("EXEC_SSH_PORT", 22),
+		User:    getRequiredEnv("EXEC_SSH_USER"),
+		KeyPath: getRequiredEnv("EXEC_SSH_KEY_PATH"),
 	})
 
 	dualPool, cleanup, err := dbmodule.NewPool(ctx, baseDatabaseURL, agentPassword, ownerPassword)
@@ -143,6 +145,7 @@ func main() {
 		panic(fmt.Sprint(os.Stderr, "failed to get Matrix user ID: ", err))
 	}
 	agentMatrixId := whoamiResp.UserID
+	systemPromptVariables["agentMatrixId"] = agentMatrixId
 
 	tools := buildTools()
 
