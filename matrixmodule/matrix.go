@@ -53,7 +53,8 @@ type SyncResponse struct {
 
 type JoinedRoom struct {
 	Timeline struct {
-		Events []json.RawMessage `json:"events"`
+		Events    []json.RawMessage `json:"events"`
+		PrevBatch string            `json:"prev_batch"`
 	} `json:"timeline"`
 }
 

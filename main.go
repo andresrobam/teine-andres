@@ -277,22 +277,18 @@ MainLoop:
 		if syncResp.Rooms.Join != nil {
 			for roomID, joinedRoom := range syncResp.Rooms.Join {
 				events := []string{}
-				var firstEventID string
 				for _, event := range joinedRoom.Timeline.Events {
 					var eventMap map[string]any
 					json.Unmarshal(event, &eventMap)
 					if eventMap["sender"] != agentMatrixId {
-						if firstEventID == "" && eventMap["event_id"] != nil {
-							firstEventID = eventMap["event_id"].(string)
-						}
 						events = append(events, string(event))
 					}
 				}
-				if len(events) > 0 && firstEventID != "" {
+				if len(events) > 0 && joinedRoom.Timeline.PrevBatch != "" {
 					// Fetch 5 prior messages for context
 					priorMessages, err := matrixClient.Read(ctx, matrixmodule.ReadArgs{
 					RoomID:    roomID,
-					From:      firstEventID,
+					From:      joinedRoom.Timeline.PrevBatch,
 					Limit:     5,
 					Direction: "b",
 				})
