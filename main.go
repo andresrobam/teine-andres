@@ -146,8 +146,6 @@ func getRequiredSystemCredential(repo *repositories.CredentialRepository, ctx co
 }
 
 func main() {
-	ctx := context.Background()
-	httpClient := &http.Client{Timeout: 120 * time.Second}
 
 	systemPromptVariables := make(map[string]string)
 
@@ -158,6 +156,7 @@ func main() {
 	systemPromptVariables["ownerMatrixId"] = getRequiredEnv("MATRIX_OWNER_ID")
 	loopLimit := getEnvNumber("TOOL_LOOP_LIMIT", 20)
 	systemPromptVariables["loopLimit"] = strconv.Itoa(loopLimit)
+	httpTimeoutSeconds := getEnvNumber("HTTP_TIMEOUT_SECONDS", 300)
 
 	execClient := execmodule.NewClient(execmodule.Config{
 		Host:    getRequiredEnv("EXEC_SSH_HOST"),
@@ -165,6 +164,9 @@ func main() {
 		User:    getEnv("EXEC_SSH_USER", "teine-andres"),
 		KeyPath: getRequiredEnv("EXEC_SSH_KEY_PATH"),
 	})
+
+	ctx := context.Background()
+	httpClient := &http.Client{Timeout: time.Duration(httpTimeoutSeconds) * time.Second}
 
 	dualPool, cleanup, err := dbmodule.NewPool(ctx, baseDatabaseURL, agentPassword, ownerPassword)
 	if err != nil {
@@ -287,11 +289,11 @@ MainLoop:
 				if len(events) > 0 && joinedRoom.Timeline.PrevBatch != "" {
 					// Fetch 5 prior messages for context
 					priorMessages, err := matrixClient.Read(ctx, matrixmodule.ReadArgs{
-					RoomID:    roomID,
-					From:      joinedRoom.Timeline.PrevBatch,
-					Limit:     5,
-					Direction: "b",
-				})
+						RoomID:    roomID,
+						From:      joinedRoom.Timeline.PrevBatch,
+						Limit:     5,
+						Direction: "b",
+					})
 					if err == nil {
 						if chunk, ok := priorMessages["chunk"].([]interface{}); ok {
 							var priorEvents []string
