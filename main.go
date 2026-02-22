@@ -310,7 +310,7 @@ MainLoop:
 			}
 		}
 
-		if len(contents) == 0 {
+		if len(contents) == 0 && lastExecutionError == "" {
 			continue
 		}
 
