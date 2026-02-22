@@ -209,6 +209,23 @@ func (c *Client) read(ctx context.Context, rawArgs string) (string, error) {
 	return string(payload), nil
 }
 
+// GetPriorMessages fetches messages before a given token
+func (c *Client) GetPriorMessages(ctx context.Context, roomID string, fromToken string, count int) (map[string]any, error) {
+	query := url.Values{}
+	query.Set("limit", fmt.Sprintf("%d", count))
+	query.Set("from", fromToken)
+	query.Set("dir", "b")
+
+	endpoint := c.buildURL("/_matrix/client/v3/rooms/"+url.PathEscape(roomID)+"/messages", query)
+
+	var result map[string]any
+	if err := c.doGet(ctx, endpoint, &result); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
 // parseWriteArgs parses and validates arguments for the write operation
 func parseWriteArgs(rawArgs string) (writeArgs, error) {
 	var args writeArgs
