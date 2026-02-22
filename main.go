@@ -203,6 +203,7 @@ func main() {
 	tools := buildTools()
 	lastHourlyLoop := time.Now()
 
+	var lastExecutionError string
 MainLoop:
 	for {
 		time.Sleep(1 * time.Second)
@@ -318,9 +319,15 @@ MainLoop:
 			Role:    "system",
 			Content: strings.Join(initialPrompt, "\n\n"),
 		}}
+		var initialMessage string
+		if lastExecutionError != "" {
+			initialMessage = lastExecutionError
+		} else {
+			initialMessage = "Help your owner achieve what he wants"
+		}
 		messages = append(messages, message{
 			Role:    "user",
-			Content: "Help your owner achieve what he wants",
+			Content: initialMessage,
 		})
 
 		fmt.Println("New conversation")
@@ -340,7 +347,8 @@ MainLoop:
 			})
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "chat error:", err)
-				continue MainLoop
+				finishReason = "http_error"
+				break
 			}
 			finishReason = fr
 
@@ -368,6 +376,11 @@ MainLoop:
 		}
 
 		fmt.Println("End of conversation loop. Finish reason: " + finishReason)
+		if finishReason != "stop" {
+			lastExecutionError = "Your last loop stopped unexpectedly due to reason: " + finishReason
+		} else {
+			lastExecutionError = ""
+		}
 	}
 }
 
