@@ -35,25 +35,19 @@ This database stores the agent's core prompts, state, memories, tasks, and crede
   - tags text[]
   - created_at timestamptz
 
-### tasks (select + insert only)
-- Purpose: Task intake for owner requests and agent-subtasks (recursive breakdowns).
-- Use: Insert new tasks; never update or delete.
+### tasks (read/write)
+- Purpose: Task intake and ongoing status for owner requests and agent-subtasks (recursive breakdowns).
+- Use: Create tasks and update status/progress as work proceeds.
 - Schema:
   - id uuid
   - parent_task_id uuid (nullable, references tasks.id)
   - title text
   - description text (nullable)
   - created_at timestamptz
-
-### task_status (read/write, no delete)
-- Purpose: Track task progress and current state for entries in `tasks`.
-- Use: Insert on task creation; update status, progress, and `postponed_until` as work proceeds. Never delete or change `task_id`.
-- Schema:
-  - task_id uuid (primary key, references tasks.id)
   - status task_status_enum
   - progress jsonb
+  - status_updated_at timestamptz
   - postponed_until timestamptz (nullable)
-  - updated_at timestamptz
 - status enum values: pending, in_progress, blocked, done, cancelled
 - postponed_until: If set, the task will be filtered out from selection until the specified time is reached. This allows creating delayed tasks/messages that won't be processed until later.
 
