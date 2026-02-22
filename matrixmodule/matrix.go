@@ -34,8 +34,8 @@ type writeArgs struct {
 	Message string `json:"message"`
 }
 
-// readArgs represents the arguments for the matrix_read tool
-type readArgs struct {
+// ReadArgs represents the arguments for reading messages from a Matrix room
+type ReadArgs struct {
 	RoomID    string `json:"room_id"`
 	Limit     int    `json:"limit"`
 	From      string `json:"from"`
@@ -137,7 +137,7 @@ func (c *Client) ExecuteTool(ctx context.Context, toolName, rawArgs string) (str
 	case "matrix_write":
 		return c.write(ctx, rawArgs)
 	case "matrix_read":
-		return c.read(ctx, rawArgs)
+		return c.readTool(ctx, rawArgs)
 	default:
 		return "", fmt.Errorf("unknown matrix tool: %s", toolName)
 	}
@@ -175,13 +175,27 @@ func (c *Client) write(ctx context.Context, rawArgs string) (string, error) {
 	return string(payload), nil
 }
 
-// read reads messages from a Matrix room
-func (c *Client) read(ctx context.Context, rawArgs string) (string, error) {
+// readTool is the tool wrapper that parses JSON and calls Read
+func (c *Client) readTool(ctx context.Context, rawArgs string) (string, error) {
 	args, err := parseReadArgs(rawArgs)
 	if err != nil {
 		return "", err
 	}
 
+	result, err := c.Read(ctx, args)
+	if err != nil {
+		return "", err
+	}
+
+	payload, err := json.Marshal(result)
+	if err != nil {
+		return "", err
+	}
+	return string(payload), nil
+}
+
+// Read reads messages from a Matrix room with the given arguments
+func (c *Client) Read(ctx context.Context, args ReadArgs) (map[string]any, error) {
 	query := url.Values{}
 	if args.Limit > 0 {
 		query.Set("limit", fmt.Sprintf("%d", args.Limit))
@@ -199,14 +213,10 @@ func (c *Client) read(ctx context.Context, rawArgs string) (string, error) {
 
 	var result map[string]any
 	if err := c.doGet(ctx, endpoint, &result); err != nil {
-		return "", err
+		return nil, err
 	}
 
-	payload, err := json.Marshal(result)
-	if err != nil {
-		return "", err
-	}
-	return string(payload), nil
+	return result, nil
 }
 
 // parseWriteArgs parses and validates arguments for the write operation
@@ -225,13 +235,13 @@ func parseWriteArgs(rawArgs string) (writeArgs, error) {
 }
 
 // parseReadArgs parses and validates arguments for the read operation
-func parseReadArgs(rawArgs string) (readArgs, error) {
-	var args readArgs
+func parseReadArgs(rawArgs string) (ReadArgs, error) {
+	var args ReadArgs
 	if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
-		return readArgs{}, fmt.Errorf("invalid matrix_read args: %w", err)
+		return ReadArgs{}, fmt.Errorf("invalid matrix_read args: %w", err)
 	}
 	if strings.TrimSpace(args.RoomID) == "" {
-		return readArgs{}, errors.New("room_id is required")
+		return ReadArgs{}, errors.New("room_id is required")
 	}
 	return args, nil
 }
