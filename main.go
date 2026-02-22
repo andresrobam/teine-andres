@@ -290,7 +290,12 @@ MainLoop:
 				}
 				if len(events) > 0 && firstEventID != "" {
 					// Fetch 5 prior messages for context
-					priorMessages, err := matrixClient.GetPriorMessages(ctx, roomID, firstEventID, 5)
+					priorMessages, err := matrixClient.Read(ctx, matrixmodule.ReadArgs{
+					RoomID:    roomID,
+					From:      firstEventID,
+					Limit:     5,
+					Direction: "b",
+				})
 					if err == nil {
 						if chunk, ok := priorMessages["chunk"].([]interface{}); ok {
 							var priorEvents []string
