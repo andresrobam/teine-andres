@@ -78,5 +78,32 @@ This database stores the agent's core prompts, state, memories, tasks, and crede
   - created_at timestamptz
   - updated_at timestamptz
 
+### conversations (owner read/write, agent read-only)
+- Purpose: Track each OpenRouter conversation and its lifecycle metadata.
+- Use: Read conversation metadata when you need to inspect prior OpenRouter sessions.
+- Schema:
+  - id uuid
+  - started_at timestamptz
+  - finished_at timestamptz (nullable)
+  - model text
+  - endpoint text
+  - finish_reason text (nullable)
+  - error text (nullable)
+  - metadata jsonb
+
+### conversation_messages (owner read/write, agent read-only)
+- Purpose: Store ordered messages for each conversation, including reasoning and tool calls.
+- Use: Read messages to review past prompts, responses, tool calls, and tool outputs.
+- Schema:
+  - id uuid
+  - conversation_id uuid (references conversations.id)
+  - seq int
+  - role text
+  - content text (nullable)
+  - reasoning text (nullable)
+  - tool_calls jsonb (nullable)
+  - tool_call_id text (nullable)
+  - created_at timestamptz
+
 ## General rules
 - Respect table-level permissions and never attempt prohibited operations.

@@ -27,6 +27,8 @@ type message struct {
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
+const openRouterEndpoint = "https://openrouter.ai/api/v1/chat/completions"
+
 type toolCall struct {
 	ID       string       `json:"id"`
 	Type     string       `json:"type"`
@@ -182,6 +184,7 @@ func main() {
 	promptRepo := repositories.NewPromptRepository(dualPool.Owner)
 	syncRepo := repositories.NewSyncStateRepository(dualPool.Owner)
 	taskRepo := repositories.NewTaskRepository(dualPool.Owner)
+	conversationRepo := repositories.NewConversationRepository(dualPool.Owner)
 
 	if err := syncPromptsFromFiles(ctx, promptRepo); err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to sync prompts from files:", err)
@@ -331,12 +334,43 @@ MainLoop:
 			Content: initialMessage,
 		})
 
+		conversationID, err := conversationRepo.CreateConversation(ctx, model, openRouterEndpoint, nil)
+		if err != nil {
+			panic(fmt.Errorf("failed to create conversation record: %w", err))
+		}
+
+		messageSeq := 0
+		stringPtr := func(value string) *string {
+			if strings.TrimSpace(value) == "" {
+				return nil
+			}
+			return &value
+		}
+		logMessage := func(role string, content *string, reasoning *string, toolCalls []toolCall, toolCallID *string) {
+			var toolCallsJSON []byte
+			if len(toolCalls) > 0 {
+				var err error
+				toolCallsJSON, err = json.Marshal(toolCalls)
+				if err != nil {
+					panic(fmt.Errorf("failed to marshal tool calls: %w", err))
+				}
+			}
+			if err := conversationRepo.InsertMessage(ctx, conversationID, messageSeq, role, content, reasoning, toolCallsJSON, toolCallID); err != nil {
+				panic(fmt.Errorf("failed to insert conversation message: %w", err))
+			}
+			messageSeq++
+		}
+
+		logMessage("system", stringPtr(messages[0].Content), nil, nil, nil)
+		logMessage("user", stringPtr(initialMessage), nil, nil, nil)
+
 		fmt.Println("New conversation")
 
 		fmt.Println(messages)
 
 		var finishReason string
 
+		var conversationErr string
 		for i := range loopLimit {
 
 			respMsg, fr, err := callChat(ctx, httpClient, apiKey, chatRequest{
@@ -348,12 +382,14 @@ MainLoop:
 			})
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "chat error:", err)
+				conversationErr = err.Error()
 				finishReason = "http_error"
 				break
 			}
 			finishReason = fr
 
 			messages = append(messages, respMsg)
+			logMessage("assistant", stringPtr(respMsg.Content), stringPtr(respMsg.Reasoning), respMsg.ToolCalls, nil)
 
 			if strings.TrimSpace(respMsg.Reasoning) != "" {
 				fmt.Println("MODEL REASONING:")
@@ -369,6 +405,8 @@ MainLoop:
 				fmt.Println("TOOL CALL: ", call)
 				result := executeTool(ctx, httpClient, dualPool.Agent, credRepo, matrixClient, execClient, call)
 				fmt.Println("TOOL CALL RESULT: ", result)
+				toolCallID := call.ID
+				logMessage("tool", stringPtr(result), nil, nil, &toolCallID)
 				messages = append(messages, message{
 					Role:       "tool",
 					ToolCallID: call.ID,
@@ -382,6 +420,9 @@ MainLoop:
 		}
 
 		fmt.Println("End of conversation loop. Finish reason: " + finishReason)
+		if err := conversationRepo.FinishConversation(ctx, conversationID, finishReason, conversationErr); err != nil {
+			fmt.Fprintln(os.Stderr, "Failed to finalize conversation:", err)
+		}
 		if finishReason != "stop" {
 			lastExecutionError = "Your last loop stopped unexpectedly due to reason: " + finishReason
 		} else {
@@ -489,7 +530,7 @@ func callChat(ctx context.Context, client *http.Client, apiKey string, payload c
 		return message{}, "", err
 	}
 
-	endpoint := "https://openrouter.ai/api/v1/chat/completions"
+	endpoint := openRouterEndpoint
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return message{}, "", err
