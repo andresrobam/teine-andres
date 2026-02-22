@@ -421,7 +421,7 @@ func buildTools() []tool {
 			Type: "function",
 			Function: toolSpec{
 				Name:        "db_read",
-				Description: "Run a read-only SQL query against the PostgreSQL database",
+				Description: "Run a select SQL query against the PostgreSQL database",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -437,8 +437,8 @@ func buildTools() []tool {
 		{
 			Type: "function",
 			Function: toolSpec{
-				Name:        "db_modify",
-				Description: "Run a write SQL query against the PostgreSQL database",
+				Name:        "db_write",
+				Description: "Run an insert/update/delete SQL query against the PostgreSQL database",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -516,7 +516,7 @@ func executeTool(ctx context.Context, client *http.Client, pool *dbmodule.Pool, 
 	switch call.Function.Name {
 	case "db_read":
 		return runReadTool(ctx, pool, call.Function.Arguments)
-	case "db_modify":
+	case "db_write":
 		return runModifyTool(ctx, pool, call.Function.Arguments)
 	case "matrix_write", "matrix_read":
 		result, err := matrixClient.ExecuteTool(ctx, call.Function.Name, call.Function.Arguments)
