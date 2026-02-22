@@ -22,6 +22,7 @@ import (
 type message struct {
 	Role       string     `json:"role"`
 	Content    string     `json:"content,omitempty"`
+	Reasoning  string     `json:"reasoning,omitempty"`
 	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
@@ -353,6 +354,11 @@ MainLoop:
 			finishReason = fr
 
 			messages = append(messages, respMsg)
+
+			if strings.TrimSpace(respMsg.Reasoning) != "" {
+				fmt.Println("MODEL REASONING:")
+				fmt.Println(respMsg.Reasoning)
+			}
 
 			if len(respMsg.ToolCalls) == 0 {
 				fmt.Println(respMsg.Content)
