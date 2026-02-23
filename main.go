@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"teine-andres/dbmodule"
 	"teine-andres/dbmodule/repositories"
 	"teine-andres/execmodule"
@@ -23,9 +22,12 @@ import (
 type message struct {
 	Role       string     `json:"role"`
 	Content    string     `json:"content,omitempty"`
+	Reasoning  string     `json:"reasoning,omitempty"`
 	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
+
+const openRouterEndpoint = "https://openrouter.ai/api/v1/chat/completions"
 
 type toolCall struct {
 	ID       string       `json:"id"`
@@ -113,7 +115,7 @@ func syncPromptsFromFiles(ctx context.Context, promptRepo *repositories.PromptRe
 func getRequiredEnv(key string) string {
 	out := os.Getenv(key)
 	if out == "" {
-		panic(fmt.Sprint("Required environment variable \"", key, "\" not defined."))
+		panic(fmt.Sprint("Required environment variable \"%s\" not defined.", key))
 	}
 	return out
 }
@@ -133,7 +135,7 @@ func getEnvNumber(key string, defaultValue int) int {
 	}
 	out, err := strconv.Atoi(str)
 	if err != nil {
-		panic(fmt.Sprint("Cannot convert value of \"", key, "\": \"", str, "\" to an integer."))
+		panic(fmt.Sprint("Cannot convert value of \"%s\": \"%s\" to an integer.", key, str))
 	}
 	return out
 }
@@ -147,8 +149,6 @@ func getRequiredSystemCredential(repo *repositories.CredentialRepository, ctx co
 }
 
 func main() {
-	ctx := context.Background()
-	httpClient := &http.Client{Timeout: 120 * time.Second}
 
 	systemPromptVariables := make(map[string]string)
 
@@ -159,6 +159,7 @@ func main() {
 	systemPromptVariables["ownerMatrixId"] = getRequiredEnv("MATRIX_OWNER_ID")
 	loopLimit := getEnvNumber("TOOL_LOOP_LIMIT", 20)
 	systemPromptVariables["loopLimit"] = strconv.Itoa(loopLimit)
+	httpTimeoutSeconds := getEnvNumber("HTTP_TIMEOUT_SECONDS", 300)
 
 	execClient := execmodule.NewClient(execmodule.Config{
 		Host:    getRequiredEnv("EXEC_SSH_HOST"),
@@ -166,6 +167,9 @@ func main() {
 		User:    getEnv("EXEC_SSH_USER", "teine-andres"),
 		KeyPath: getRequiredEnv("EXEC_SSH_KEY_PATH"),
 	})
+
+	ctx := context.Background()
+	httpClient := &http.Client{Timeout: time.Duration(httpTimeoutSeconds) * time.Second}
 
 	dualPool, cleanup, err := dbmodule.NewPool(ctx, baseDatabaseURL, agentPassword, ownerPassword)
 	if err != nil {
@@ -203,6 +207,7 @@ func main() {
 	tools := buildTools()
 	lastHourlyLoop := time.Now()
 
+	var lastExecutionError string
 MainLoop:
 	for {
 		time.Sleep(1 * time.Second)
@@ -286,22 +291,30 @@ MainLoop:
 						events = append(events, string(event))
 					}
 				}
-				if len(events) > 0 {
+				if len(events) > 0 && joinedRoom.Timeline.PrevBatch != "" {
+					// Fetch 5 prior messages for context
+					priorMessages, err := matrixClient.Read(ctx, matrixmodule.ReadArgs{
+						RoomID:    roomID,
+						From:      joinedRoom.Timeline.PrevBatch,
+						Limit:     5,
+						Direction: "b",
+					})
+					if err == nil {
+						if chunk, ok := priorMessages["chunk"].([]interface{}); ok {
+							var priorEvents []string
+							for i := len(chunk) - 1; i >= 0; i-- {
+								msgJSON, _ := json.Marshal(chunk[i])
+								priorEvents = append(priorEvents, string(msgJSON))
+							}
+							contents = append(contents, fmt.Sprintf("Here are the 5 messages prior to the new events in the Matrix room \"%s\" for context:\n[%s]", roomID, strings.Join(priorEvents, ", ")))
+						}
+					}
 					contents = append(contents, fmt.Sprintf("Here are the events that happened in the Matrix room \"%s\" since the last sync:\n[%s]", roomID, strings.Join(events, ", ")))
 				}
 			}
 		}
 
-		if len(contents) == 0 {
-			continue
-		}
-
-		// Create a new conversation record
-		conversationID, err := conversationRepo.CreateConversation(ctx, map[string]interface{}{
-			"model": model,
-		})
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Failed to create conversation:", err)
+		if len(contents) == 0 && lastExecutionError == "" {
 			continue
 		}
 
@@ -310,10 +323,46 @@ MainLoop:
 			Role:    "system",
 			Content: strings.Join(initialPrompt, "\n\n"),
 		}}
+		var initialMessage string
+		if lastExecutionError != "" {
+			initialMessage = lastExecutionError
+		} else {
+			initialMessage = "Help your owner achieve what he wants"
+		}
 		messages = append(messages, message{
 			Role:    "user",
-			Content: "Help your owner achieve what he wants",
+			Content: initialMessage,
 		})
+
+		conversationID, err := conversationRepo.CreateConversation(ctx, model, openRouterEndpoint, nil)
+		if err != nil {
+			panic(fmt.Errorf("failed to create conversation record: %w", err))
+		}
+
+		messageSeq := 0
+		stringPtr := func(value string) *string {
+			if strings.TrimSpace(value) == "" {
+				return nil
+			}
+			return &value
+		}
+		logMessage := func(role string, content *string, reasoning *string, toolCalls []toolCall, toolCallID *string) {
+			var toolCallsJSON []byte
+			if len(toolCalls) > 0 {
+				var err error
+				toolCallsJSON, err = json.Marshal(toolCalls)
+				if err != nil {
+					panic(fmt.Errorf("failed to marshal tool calls: %w", err))
+				}
+			}
+			if err := conversationRepo.InsertMessage(ctx, conversationID, messageSeq, role, content, reasoning, toolCallsJSON, toolCallID); err != nil {
+				panic(fmt.Errorf("failed to insert conversation message: %w", err))
+			}
+			messageSeq++
+		}
+
+		logMessage("system", stringPtr(messages[0].Content), nil, nil, nil)
+		logMessage("user", stringPtr(initialMessage), nil, nil, nil)
 
 		fmt.Println("New conversation")
 
@@ -321,6 +370,7 @@ MainLoop:
 
 		var finishReason string
 
+		var conversationErr string
 		for i := range loopLimit {
 
 			respMsg, fr, err := callChat(ctx, httpClient, apiKey, chatRequest{
@@ -332,17 +382,19 @@ MainLoop:
 			})
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "chat error:", err)
-				continue MainLoop
+				conversationErr = err.Error()
+				finishReason = "http_error"
+				break
 			}
 			finishReason = fr
 
-			// Insert assistant message to conversation log
-			_, err = conversationRepo.InsertChatMessage(ctx, conversationID, "assistant", respMsg.Content, finishReason, model)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "Failed to log assistant message:", err)
-			}
-
 			messages = append(messages, respMsg)
+			logMessage("assistant", stringPtr(respMsg.Content), stringPtr(respMsg.Reasoning), respMsg.ToolCalls, nil)
+
+			if strings.TrimSpace(respMsg.Reasoning) != "" {
+				fmt.Println("MODEL REASONING:")
+				fmt.Println(respMsg.Reasoning)
+			}
 
 			if len(respMsg.ToolCalls) == 0 {
 				fmt.Println(respMsg.Content)
@@ -353,6 +405,8 @@ MainLoop:
 				fmt.Println("TOOL CALL: ", call)
 				result := executeTool(ctx, httpClient, dualPool.Agent, credRepo, matrixClient, execClient, call)
 				fmt.Println("TOOL CALL RESULT: ", result)
+				toolCallID := call.ID
+				logMessage("tool", stringPtr(result), nil, nil, &toolCallID)
 				messages = append(messages, message{
 					Role:       "tool",
 					ToolCallID: call.ID,
@@ -366,25 +420,25 @@ MainLoop:
 		}
 
 		fmt.Println("End of conversation loop. Finish reason: " + finishReason)
-
-		// Mark conversation as finished
-		err = conversationRepo.FinishConversation(ctx, conversationID, finishReason)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Failed to finish conversation:", err)
+		if err := conversationRepo.FinishConversation(ctx, conversationID, finishReason, conversationErr); err != nil {
+			fmt.Fprintln(os.Stderr, "Failed to finalize conversation:", err)
 		}
 
-		// Generate summary - this call is NOT logged to conversation_messages
+		// Generate and save conversation summary
 		summary, err := generateConversationSummary(ctx, httpClient, apiKey, model, messages)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Failed to generate summary:", err)
 		} else {
-			// Save summary to conversation
-			err = conversationRepo.UpdateSummary(ctx, conversationID, summary)
-			if err != nil {
+			if err := conversationRepo.UpdateSummary(ctx, conversationID, summary); err != nil {
 				fmt.Fprintln(os.Stderr, "Failed to save summary:", err)
 			} else {
 				fmt.Println("Conversation summary saved successfully")
 			}
+		}
+		if finishReason != "stop" {
+			lastExecutionError = "Your last loop stopped unexpectedly due to reason: " + finishReason
+		} else {
+			lastExecutionError = ""
 		}
 	}
 }
@@ -426,7 +480,7 @@ func buildTools() []tool {
 			Type: "function",
 			Function: toolSpec{
 				Name:        "db_read",
-				Description: "Run a read-only SQL query against the PostgreSQL database",
+				Description: "Run a select SQL query against the PostgreSQL database",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -442,8 +496,8 @@ func buildTools() []tool {
 		{
 			Type: "function",
 			Function: toolSpec{
-				Name:        "db_modify",
-				Description: "Run a write SQL query against the PostgreSQL database",
+				Name:        "db_write",
+				Description: "Run an insert/update/delete SQL query against the PostgreSQL database",
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -488,7 +542,7 @@ func callChat(ctx context.Context, client *http.Client, apiKey string, payload c
 		return message{}, "", err
 	}
 
-	endpoint := "https://openrouter.ai/api/v1/chat/completions"
+	endpoint := openRouterEndpoint
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return message{}, "", err
@@ -582,7 +636,7 @@ func executeTool(ctx context.Context, client *http.Client, pool *dbmodule.Pool, 
 	switch call.Function.Name {
 	case "db_read":
 		return runReadTool(ctx, pool, call.Function.Arguments)
-	case "db_modify":
+	case "db_write":
 		return runModifyTool(ctx, pool, call.Function.Arguments)
 	case "matrix_write", "matrix_read":
 		result, err := matrixClient.ExecuteTool(ctx, call.Function.Name, call.Function.Arguments)

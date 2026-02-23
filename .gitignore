@@ -1,7 +1,3 @@
 /teine-andres
 /teine-andres.exe
-
-# Aider files
-.aider.chat.history.md
-.aider.input.history
-.aider.tags.cache.v4/
+.aider*
