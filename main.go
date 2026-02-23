@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"teine-andres/dbmodule"
 	"teine-andres/dbmodule/repositories"
 	"teine-andres/execmodule"
@@ -112,7 +113,7 @@ func syncPromptsFromFiles(ctx context.Context, promptRepo *repositories.PromptRe
 func getRequiredEnv(key string) string {
 	out := os.Getenv(key)
 	if out == "" {
-		panic(fmt.Sprint("Required environment variable \"%s\" not defined.", key))
+		panic(fmt.Sprint("Required environment variable \"", key, "\" not defined."))
 	}
 	return out
 }
@@ -132,7 +133,7 @@ func getEnvNumber(key string, defaultValue int) int {
 	}
 	out, err := strconv.Atoi(str)
 	if err != nil {
-		panic(fmt.Sprint("Cannot convert value of \"%s\": \"%s\" to an integer.", key, str))
+		panic(fmt.Sprint("Cannot convert value of \"", key, "\": \"", str, "\" to an integer."))
 	}
 	return out
 }
@@ -179,6 +180,7 @@ func main() {
 	promptRepo := repositories.NewPromptRepository(dualPool.Owner)
 	syncRepo := repositories.NewSyncStateRepository(dualPool.Owner)
 	taskRepo := repositories.NewTaskRepository(dualPool.Owner)
+	conversationRepo := repositories.NewConversationRepository(dualPool.Owner)
 
 	if err := syncPromptsFromFiles(ctx, promptRepo); err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to sync prompts from files:", err)
@@ -294,6 +296,15 @@ MainLoop:
 			continue
 		}
 
+		// Create a new conversation record
+		conversationID, err := conversationRepo.CreateConversation(ctx, map[string]interface{}{
+			"model": model,
+		})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Failed to create conversation:", err)
+			continue
+		}
+
 		initialPrompt = append(initialPrompt, strings.Join(contents, "\n\n"))
 		messages := []message{{
 			Role:    "system",
@@ -325,6 +336,12 @@ MainLoop:
 			}
 			finishReason = fr
 
+			// Insert assistant message to conversation log
+			_, err = conversationRepo.InsertChatMessage(ctx, conversationID, "assistant", respMsg.Content, finishReason, model)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Failed to log assistant message:", err)
+			}
+
 			messages = append(messages, respMsg)
 
 			if len(respMsg.ToolCalls) == 0 {
@@ -349,6 +366,26 @@ MainLoop:
 		}
 
 		fmt.Println("End of conversation loop. Finish reason: " + finishReason)
+
+		// Mark conversation as finished
+		err = conversationRepo.FinishConversation(ctx, conversationID, finishReason)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Failed to finish conversation:", err)
+		}
+
+		// Generate summary - this call is NOT logged to conversation_messages
+		summary, err := generateConversationSummary(ctx, httpClient, apiKey, model, messages)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Failed to generate summary:", err)
+		} else {
+			// Save summary to conversation
+			err = conversationRepo.UpdateSummary(ctx, conversationID, summary)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Failed to save summary:", err)
+			} else {
+				fmt.Println("Conversation summary saved successfully")
+			}
+		}
 	}
 }
 
@@ -478,6 +515,67 @@ func callChat(ctx context.Context, client *http.Client, apiKey string, payload c
 	}
 
 	return out.Choices[0].Message, out.Choices[0].FinishReason, nil
+}
+
+func generateConversationSummary(ctx context.Context, client *http.Client, apiKey string, model string, conversationMessages []message) (string, error) {
+	// Build a summary of the conversation for the LLM
+	var conversationSummary strings.Builder
+	conversationSummary.WriteString("Please provide a brief but informative summary of this conversation. The summary should:\n")
+	conversationSummary.WriteString("- Be short (1-3 sentences) to not pollute context\n")
+	conversationSummary.WriteString("- Capture the main topics, tasks, or goals discussed\n")
+	conversationSummary.WriteString("- Note any important decisions, outcomes, or completed actions\n")
+	conversationSummary.WriteString("- Mention if there are any ongoing or blocked tasks\n")
+	conversationSummary.WriteString("- Be written from your perspective (use 'I', 'me', 'my')\n\n")
+	conversationSummary.WriteString("Conversation:\n")
+
+	// Include only the most relevant messages (user, assistant, tool results)
+	for _, msg := range conversationMessages {
+		switch msg.Role {
+		case "user":
+			conversationSummary.WriteString(fmt.Sprintf("User: %s\n", truncateString(msg.Content, 500)))
+		case "assistant":
+			if msg.Content != "" {
+				conversationSummary.WriteString(fmt.Sprintf("Assistant: %s\n", truncateString(msg.Content, 500)))
+			}
+			if len(msg.ToolCalls) > 0 {
+				for _, tc := range msg.ToolCalls {
+					conversationSummary.WriteString(fmt.Sprintf("[Tool call: %s]\n", tc.Function.Name))
+				}
+			}
+		case "tool":
+			conversationSummary.WriteString(fmt.Sprintf("[Tool result: %s]\n", truncateString(msg.Content, 300)))
+		}
+	}
+
+	conversationSummary.WriteString("\nProvide only the summary text, nothing else.")
+
+	summaryMessages := []message{
+		{
+			Role:    "system",
+			Content: "You are a helpful assistant that summarizes conversations concisely.",
+		},
+		{
+			Role:    "user",
+			Content: conversationSummary.String(),
+		},
+	}
+
+	respMsg, _, err := callChat(ctx, client, apiKey, chatRequest{
+		Model:    model,
+		Messages: summaryMessages,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(respMsg.Content), nil
+}
+
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 
 func executeTool(ctx context.Context, client *http.Client, pool *dbmodule.Pool, credRepo *repositories.CredentialRepository, matrixClient *matrixmodule.Client, execClient *execmodule.Client, call toolCall) string {
