@@ -24,13 +24,6 @@ type Task struct {
 	PostponedUntil  *time.Time `db:"postponed_until"`
 }
 
-type LogEntry struct {
-	ID        uuid.UUID `db:"id"`
-	EventType string    `db:"event_type"`
-	Payload   []byte    `db:"payload"`
-	CreatedAt time.Time `db:"created_at"`
-}
-
 type Credential struct {
 	ID        uuid.UUID  `db:"id"`
 	Name      string     `db:"name"`

@@ -27,11 +27,14 @@ services:
       DATABASE_URL: postgres://teine-postgres:5432/teine?sslmode=disable
       DATABASE_PASSWORD_OWNER: ${DATABASE_PASSWORD_OWNER:?DATABASE_PASSWORD_OWNER is required}
       DATABASE_PASSWORD_AGENT: ${DATABASE_PASSWORD_AGENT:?DATABASE_PASSWORD_AGENT is required}
+      OWNER_FIRST_NAME: ${OWNER_FIRST_NAME:?OWNER_FIRST_NAME is required}
+      MATRIX_OWNER_ID: ${MATRIX_OWNER_ID:?MATRIX_OWNER_ID is required}
       EXEC_SSH_HOST: ${EXEC_SSH_HOST:?EXEC_SSH_HOST is required}
       EXEC_SSH_USER: ${EXEC_SSH_USER:-teine-andres}
       EXEC_SSH_PORT: ${EXEC_SSH_PORT:-22}
       EXEC_SSH_KEY_PATH: /app/data/id_ed25519
       TOOL_LOOP_LIMIT: ${TOOL_LOOP_LIMIT:-20}
+      HTTP_TIMEOUT_SECONDS: ${HTTP_TIMEOUT_SECONDS:-300}
     volumes:
       - ./data/teine-andres:/app/data
     restart: unless-stopped

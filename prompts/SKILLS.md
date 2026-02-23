@@ -1,0 +1,1 @@
+Every time you solve a problem in a novel and successful way, decide if it's useful enough information to save for the future. If so, save it as a skill into your self table. As you gain new knowledge on how to use the skill or as you solve problems around how you interacted with the skill earlier, update the database entry accordingly.

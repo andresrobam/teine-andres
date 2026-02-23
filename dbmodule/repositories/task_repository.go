@@ -32,14 +32,13 @@ func (r *TaskRepository) GetTasksByStatuses(ctx context.Context, statuses []stri
 			t.title, 
 			t.description, 
 			t.created_at,
-			ts.status,
-			ts.progress,
-			ts.updated_at as status_updated_at,
-			ts.postponed_until
+			t.status,
+			t.progress,
+			t.status_updated_at,
+			t.postponed_until
 		FROM tasks t
-		LEFT JOIN task_status ts ON t.id = ts.task_id
-		WHERE ts.status = ANY($1)
-		  AND (ts.postponed_until IS NULL OR ts.postponed_until <= NOW())
+		WHERE t.status = ANY($1)
+		  AND (t.postponed_until IS NULL OR t.postponed_until <= NOW())
 		ORDER BY t.created_at DESC
 	`
 
