@@ -314,15 +314,17 @@ MainLoop:
 			}
 		}
 
-		summaries, err := conversationRepo.GetRecentConversationSummaries(ctx, 5)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Failed to load recent conversation summaries:", err)
-		} else if len(summaries) > 0 {
-			lines := make([]string, 0, len(summaries))
-			for _, summary := range summaries {
-				lines = append(lines, "- "+strings.TrimSpace(summary))
+		if len(contents) > 0 {
+			summaries, err := conversationRepo.GetRecentConversationSummaries(ctx, 5)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Failed to load recent conversation summaries:", err)
+			} else if len(summaries) > 0 {
+				lines := make([]string, 0, len(summaries))
+				for _, summary := range summaries {
+					lines = append(lines, "- "+strings.TrimSpace(summary))
+				}
+				contents = append(contents, "Here are the 5 most recent conversation summaries:\n"+strings.Join(lines, "\n"))
 			}
-			contents = append(contents, "Here are the 5 most recent conversation summaries:\n"+strings.Join(lines, "\n"))
 		}
 
 		if len(contents) == 0 && lastExecutionError == "" {
