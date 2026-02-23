@@ -83,6 +83,7 @@ This database stores the agent's core prompts, state, memories, tasks, and crede
   - endpoint text
   - finish_reason text (nullable)
   - error text (nullable)
+  - summary text (nullable)
   - metadata jsonb
 
 ### conversation_messages (owner read/write, agent read-only)

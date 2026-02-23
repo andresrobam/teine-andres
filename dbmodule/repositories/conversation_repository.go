@@ -84,3 +84,57 @@ func (r *ConversationRepository) FinishConversation(ctx context.Context, convers
 
 	return err
 }
+
+func (r *ConversationRepository) UpdateConversationSummary(ctx context.Context, conversationID uuid.UUID, summary string) error {
+	if r.pool == nil {
+		return errors.New("DATABASE_URL is not configured")
+	}
+
+	dbCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var summaryPtr *string
+	if strings.TrimSpace(summary) != "" {
+		summaryPtr = &summary
+	}
+
+	_, err := r.pool.Exec(dbCtx,
+		"UPDATE conversations SET summary = $1 WHERE id = $2",
+		summaryPtr, conversationID)
+
+	return err
+}
+
+func (r *ConversationRepository) GetRecentConversationSummaries(ctx context.Context, limit int) ([]string, error) {
+	if r.pool == nil {
+		return nil, errors.New("DATABASE_URL is not configured")
+	}
+	if limit <= 0 {
+		return []string{}, nil
+	}
+
+	dbCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	rows, err := r.pool.Query(dbCtx,
+		"SELECT summary FROM conversations WHERE summary IS NOT NULL AND summary <> '' ORDER BY COALESCE(finished_at, started_at) DESC LIMIT $1",
+		limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var summaries []string
+	for rows.Next() {
+		var summary string
+		if err := rows.Scan(&summary); err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, summary)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return summaries, nil
+}

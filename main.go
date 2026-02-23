@@ -314,6 +314,17 @@ MainLoop:
 			}
 		}
 
+		summaries, err := conversationRepo.GetRecentConversationSummaries(ctx, 5)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Failed to load recent conversation summaries:", err)
+		} else if len(summaries) > 0 {
+			lines := make([]string, 0, len(summaries))
+			for _, summary := range summaries {
+				lines = append(lines, "- "+strings.TrimSpace(summary))
+			}
+			contents = append(contents, "Here are the 5 most recent conversation summaries:\n"+strings.Join(lines, "\n"))
+		}
+
 		if len(contents) == 0 && lastExecutionError == "" {
 			continue
 		}
@@ -420,6 +431,12 @@ MainLoop:
 		}
 
 		fmt.Println("End of conversation loop. Finish reason: " + finishReason)
+		summary, err := summarizeConversation(ctx, httpClient, apiKey, model, messages)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Failed to summarize conversation:", err)
+		} else if err := conversationRepo.UpdateConversationSummary(ctx, conversationID, summary); err != nil {
+			fmt.Fprintln(os.Stderr, "Failed to store conversation summary:", err)
+		}
 		if err := conversationRepo.FinishConversation(ctx, conversationID, finishReason, conversationErr); err != nil {
 			fmt.Fprintln(os.Stderr, "Failed to finalize conversation:", err)
 		}
@@ -557,6 +574,37 @@ func callChat(ctx context.Context, client *http.Client, apiKey string, payload c
 	}
 
 	return out.Choices[0].Message, out.Choices[0].FinishReason, nil
+}
+
+func summarizeConversation(ctx context.Context, client *http.Client, apiKey string, model string, messages []message) (string, error) {
+	summaryPrompt := strings.Join([]string{
+		"Summarize the conversation for archival purposes.",
+		"Include key decisions, outcomes, errors, and info about any relevant tool calls.",
+		"Do not include raw tool arguments; describe actions and outputs in plain text.",
+		"Keep it concise and self-contained.",
+	}, " ")
+
+	summaryMessages := make([]message, 0, len(messages)+1)
+	summaryMessages = append(summaryMessages, messages...)
+	summaryMessages = append(summaryMessages, message{
+		Role:    "user",
+		Content: summaryPrompt,
+	})
+
+	respMsg, _, err := callChat(ctx, client, apiKey, chatRequest{
+		Model:    model,
+		Messages: summaryMessages,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	summary := strings.TrimSpace(respMsg.Content)
+	if summary == "" {
+		return "", errors.New("summary response was empty")
+	}
+
+	return summary, nil
 }
 
 func executeTool(ctx context.Context, client *http.Client, pool *dbmodule.Pool, credRepo *repositories.CredentialRepository, matrixClient *matrixmodule.Client, execClient *execmodule.Client, call toolCall) string {
